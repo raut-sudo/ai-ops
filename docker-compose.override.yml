@@ -8,5 +8,5 @@ services:
   backend:
     volumes:
       # Mount source code for hot-reload (--reload flag in base compose command)
-      - ../backend/app:/app/app
-      - ../backend/alembic:/app/alembic
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic

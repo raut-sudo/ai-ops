@@ -9,12 +9,18 @@ BLUEPRINT §18 (Day 1) requirement:
   Coupling RECURSION_LIMIT to MAX_RETRIES guarantees GraphRecursionError (S-NEW-6).
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load .env from project root (two levels up from app/ package)
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -36,7 +42,8 @@ class Settings(BaseSettings):
     # ── Database ───────────────────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://ecomops:ecomops@localhost:5432/ecom_brain"
     # Sync URL used only by Alembic migrations (not the async app)
-    DATABASE_URL_SYNC: str = "postgresql://ecomops:ecomops@localhost:5432/ecom_brain"
+    DATABASE_URL_SYNC: str = "postgresql+psycopg://ecomops:ecomops@localhost:5432/ecom_brain"
+    TEST_DATABASE_URL: str = "postgresql+asyncpg://ecomops:ecomops@localhost:5432/ecom_brain_test"
 
     # ── Qdrant ─────────────────────────────────────────────────────────────────
     QDRANT_HOST: str = "localhost"
@@ -63,6 +70,7 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: str = ""
     LANGFUSE_HOST: str = "https://cloud.langfuse.com"
+    LANGFUSE_OTEL_ENDPOINT: str = "https://cloud.langfuse.com/api/public/otel/v1/traces"
 
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4318"
     OTEL_SERVICE_NAME: str = "ai-ops-backend"
