@@ -1,0 +1,12 @@
+# docker-compose.override.yml — DEV-ONLY hot-reload volume mounts.
+# This file is automatically merged by docker compose when present.
+# Do NOT commit secrets here — use .env.
+
+name: ai-ops
+
+services:
+  backend:
+    volumes:
+      # Mount source code for hot-reload (--reload flag in base compose command)
+      - ../backend/app:/app/app
+      - ../backend/alembic:/app/alembic

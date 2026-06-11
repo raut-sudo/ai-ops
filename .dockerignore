@@ -1,0 +1,38 @@
+# Version control
+.git/
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+.uv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Environments — never bake secrets into image
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Frontend (not needed for backend image)
+frontend/
+node_modules/
+.next/
+
+# Docs
+docs/
+*.md
+
+# Docker meta
+infra/docker-compose*.yml
+infra/Dockerfile*
