@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # ── App ────────────────────────────────────────────────────────────────────
     APP_ENV: str = "development"
+    APP_VERSION: str = "0.1.0"
     LOG_LEVEL: str = "INFO"
 
     # ── Azure OpenAI ───────────────────────────────────────────────────────────
