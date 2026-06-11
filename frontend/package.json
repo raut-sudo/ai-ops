@@ -1,0 +1,11 @@
+{
+  "name": "ai-ops-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "dev": "echo 'Frontend Sprint 0 scaffold only. Implementation starts in Sprint 8.'",
+    "build": "echo 'Frontend Sprint 0 scaffold only.'",
+    "test": "echo 'No frontend tests yet'"
+  }
+}

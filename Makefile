@@ -5,16 +5,16 @@
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 up:
-	docker compose -f infra/docker-compose.yml up -d
+	docker compose up -d
 
 down:
-	docker compose -f infra/docker-compose.yml down
+	docker compose down
 
 restart:
-	docker compose -f infra/docker-compose.yml restart backend
+	docker compose restart backend
 
 logs:
-	docker compose -f infra/docker-compose.yml logs -f backend
+	docker compose logs -f backend
 
 # ── Database (run inside container or with uv run locally) ────────────────────
 migrate:

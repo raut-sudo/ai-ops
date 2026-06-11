@@ -75,8 +75,8 @@ ai-ops/
 │   └── tests/
 ├── infra/
 │   ├── Dockerfile.backend
-│   ├── docker-compose.yml
-│   └── docker-compose.override.yml  # dev hot-reload
+├── docker-compose.yml
+└── docker-compose.override.yml  # dev hot-reload
 ├── docs/
 │   ├── DECISIONS.md     # Architecture decision log
 │   └── PROGRESS.md      # Phase completion tracker

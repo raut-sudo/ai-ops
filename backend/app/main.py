@@ -25,6 +25,7 @@ from app.config import settings
 from app.core.exceptions import AppException, app_exception_handler, unhandled_exception_handler
 from app.core.logging import configure_logging
 from app.core.middleware import CorrelationIDMiddleware
+from app.graph.runtime import setup_checkpointer, shutdown_checkpointer
 from app.observability.tracer import setup_tracing, shutdown_tracing
 from app.routers.health import router as health_router
 
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup → yield → shutdown."""
     # ── Startup ──────────────────────────────────────────────────────────────
     configure_logging(log_level=settings.LOG_LEVEL, app_env=settings.APP_ENV)
+    await setup_checkpointer()
     setup_tracing(app)
     log.info(
         "app.startup",
@@ -45,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     yield
     # ── Shutdown ─────────────────────────────────────────────────────────────
+    await shutdown_checkpointer()
     shutdown_tracing()
     log.info("app.shutdown")
 

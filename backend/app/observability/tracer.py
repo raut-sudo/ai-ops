@@ -12,6 +12,8 @@ point at Langfuse in Phase 10 via OTEL_EXPORTER_OTLP_ENDPOINT env var.
 
 from __future__ import annotations
 
+import base64
+
 import structlog
 from fastapi import FastAPI
 from opentelemetry import trace
@@ -30,6 +32,46 @@ log = structlog.get_logger(__name__)
 _provider: TracerProvider | None = None
 
 
+def _langfuse_auth_header() -> str | None:
+    """Return Basic auth header value expected by Langfuse OTLP endpoint."""
+    if not settings.LANGFUSE_PUBLIC_KEY or not settings.LANGFUSE_SECRET_KEY:
+        return None
+    token = base64.b64encode(
+        f"{settings.LANGFUSE_PUBLIC_KEY}:{settings.LANGFUSE_SECRET_KEY}".encode()
+    ).decode("utf-8")
+    return f"Basic {token}"
+
+
+def init_otel() -> TracerProvider:
+    """Initialise and register the global OTel tracer provider."""
+    global _provider
+
+    resource = Resource.create({"service.name": settings.OTEL_SERVICE_NAME})
+
+    headers: dict[str, str] = {}
+    auth = _langfuse_auth_header()
+    if auth:
+        headers["Authorization"] = auth
+
+    exporter = OTLPSpanExporter(
+        endpoint=settings.LANGFUSE_OTEL_ENDPOINT,
+        headers=headers,
+    )
+
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    _provider = provider
+
+    log.info(
+        "otel.tracing.configured",
+        service=settings.OTEL_SERVICE_NAME,
+        otlp_endpoint=settings.LANGFUSE_OTEL_ENDPOINT,
+        auth_header_set=bool(auth),
+    )
+    return provider
+
+
 def setup_tracing(app: FastAPI) -> TracerProvider:
     """Initialise TracerProvider and instrument FastAPI.
 
@@ -39,29 +81,13 @@ def setup_tracing(app: FastAPI) -> TracerProvider:
     FastAPIInstrumentor.instrument_app() is idempotent on repeated calls
     (it checks internally whether already instrumented).
     """
-    global _provider
-
-    resource = Resource.create({"service.name": settings.OTEL_SERVICE_NAME})
-    exporter = OTLPSpanExporter(
-        # Phase 10: this endpoint will be updated to
-        # f"{settings.LANGFUSE_HOST}/api/public/otel/v1/traces" with Basic auth.
-        endpoint=f"{settings.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces",
-    )
-    provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
-    _provider = provider
+    provider = init_otel()
 
     FastAPIInstrumentor.instrument_app(app)
     # Phase 1 stub: instrument without an engine — SQLAlchemy adds the hook
     # eagerly; Phase 2 will pass the real engine when it creates it.
     SQLAlchemyInstrumentor().instrument()
 
-    log.info(
-        "otel.tracing.configured",
-        service=settings.OTEL_SERVICE_NAME,
-        otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
-    )
     return provider
 
 
