@@ -24,8 +24,8 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.core.exceptions import AppException, app_exception_handler, unhandled_exception_handler
 from app.core.logging import configure_logging
-from app.core.middleware import CorrelationIDMiddleware
-from app.graph.runtime import setup_checkpointer, shutdown_checkpointer
+from app.core.middleware import AuthMiddleware, CorrelationIDMiddleware
+from app.graph.runtime import compile_graph_singleton, setup_checkpointer, shutdown_checkpointer
 from app.observability.tracer import setup_tracing, shutdown_tracing
 from app.routers.health import router as health_router
 
@@ -38,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ── Startup ──────────────────────────────────────────────────────────────
     configure_logging(log_level=settings.LOG_LEVEL, app_env=settings.APP_ENV)
     await setup_checkpointer()
+    await compile_graph_singleton()
     setup_tracing(app)
     log.info(
         "app.startup",
@@ -65,8 +66,11 @@ def create_app() -> FastAPI:
     )
 
     # ── Middleware ────────────────────────────────────────────────────────────
-    # NOTE: starlette adds middleware in reverse order, so first-added = outermost.
+    # Starlette adds middleware in reverse order → first-added = outermost.
+    # Desired order (outer → inner): Auth → CorrelationID → OTel → handler.
+    # OTel is added by setup_tracing() (innermost); we add the others explicitly.
     application.add_middleware(CorrelationIDMiddleware)
+    application.add_middleware(AuthMiddleware)
 
     # ── Exception handlers ────────────────────────────────────────────────────
     application.add_exception_handler(AppException, app_exception_handler)  # type: ignore[arg-type]
@@ -77,10 +81,28 @@ def create_app() -> FastAPI:
     # Readiness (/api/v1/health) is declared with full path inside health_router.
     application.include_router(health_router)
 
+    # Sprint 7 routers — all protected by AuthMiddleware except /healthz.
+    from app.routers.actions import router as actions_router
+    from app.routers.approve import router as approve_router
+    from app.routers.chat import router as chat_router
+    from app.routers.incidents import router as incidents_router
+    from app.routers.operational import router as operational_router
+
+    application.include_router(chat_router, prefix="/api/v1")
+    application.include_router(approve_router, prefix="/api/v1")
+    application.include_router(incidents_router, prefix="/api/v1")
+    application.include_router(actions_router, prefix="/api/v1")
+    application.include_router(operational_router, prefix="/api/v1")
+
     # Root liveness — kept for minimal container health checks.
     @application.get("/", include_in_schema=False)
     async def root() -> JSONResponse:
         return JSONResponse({"service": "ai-ops-backend", "status": "ok"})
+
+    # /healthz alias — no auth required (§19.1).
+    @application.get("/healthz", include_in_schema=False)
+    async def healthz() -> JSONResponse:
+        return JSONResponse({"status": "ok"})
 
     return application
 

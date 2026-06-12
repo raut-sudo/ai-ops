@@ -172,12 +172,33 @@ class FinalResponse(BaseModel):
     generated_at: datetime = Field(default_factory=_utcnow)
 
 
+# ── API request/response schemas (Sprint 7) ──────────────────────────────────
+
+
+class ChatRequest(BaseModel):
+    """POST /chat request body."""
+
+    query: str
+
+
+class ApproveRequest(BaseModel):
+    """POST /approve request body.
+
+    thread_id lives here (not in HITLDecision — that schema is FROZEN).
+    """
+
+    thread_id: str
+    decision: HITLDecision
+
+
 __all__ = [
     "ActionParams",
     "ActionProposal",
     "ActionResult",
     "AlertParams",
+    "ApproveRequest",
     "CampaignParams",
+    "ChatRequest",
     "DiscountParams",
     "Domain",
     "DomainFinding",

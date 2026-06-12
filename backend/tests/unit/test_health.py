@@ -149,7 +149,7 @@ async def test_app_exception_returns_typed_error_envelope() -> None:
     app.include_router(test_router)
 
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        resp = await c.get("/_test/raise")
+        resp = await c.get("/_test/raise", headers={"X-User-Id": "test-user"})
 
     assert resp.status_code == 422
     body = resp.json()
