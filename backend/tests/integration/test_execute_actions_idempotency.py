@@ -103,3 +103,15 @@ async def test_execute_actions_node_is_idempotent_for_same_action() -> None:
     assert after["quantity_on_hand"] == before["quantity_on_hand"] + 5
     assert int(movement_count) == 1
     assert final_status == "executed"
+
+    # Teardown: restore original inventory state so test_sprint2_seed sees qty=0
+    async with get_session() as session:
+        await session.execute(
+            text("UPDATE inventory SET quantity_on_hand = :qty WHERE sku = :sku"),
+            {"qty": before["quantity_on_hand"], "sku": "SKU-101"},
+        )
+        await session.execute(
+            text("DELETE FROM inventory_movements WHERE reference_id = :aid"),
+            {"aid": action_id},
+        )
+        await session.commit()

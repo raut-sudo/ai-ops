@@ -1,3 +1,4 @@
+from app.graph.nodes._react_domain import run_domain_react_agent
 from app.graph.nodes.action_agent import action_agent_node
 from app.graph.nodes.assemble_response import assemble_response_node
 from app.graph.nodes.execute_actions import execute_actions_node
@@ -25,6 +26,7 @@ __all__ = [
     "memory_retrieve_node",
     "persist_incident_node",
     "reflection_node",
+    "run_domain_react_agent",
     "sales_agent_node",
     "support_agent_node",
     "synthesizer_node",

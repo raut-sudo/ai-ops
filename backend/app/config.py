@@ -34,10 +34,10 @@ class Settings(BaseSettings):
     # ── Azure OpenAI ───────────────────────────────────────────────────────────
     AZURE_OPENAI_API_KEY: str = ""
     AZURE_OPENAI_ENDPOINT: str = ""
-    AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
+    AZURE_OPENAI_API_VERSION: str = "2025-04-01-preview"
     AZURE_OPENAI_DEPLOYMENT_GPT4O: str = "gpt-4o"
-    AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI: str = "gpt-4o-mini"
-    AZURE_OPENAI_DEPLOYMENT_EMBEDDING: str = "text-embedding-3-small"
+    AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI: str = "gpt-4.1-mini-2025-04-14"
+    AZURE_OPENAI_DEPLOYMENT_EMBEDDING: str = "text-embedding-3-small-1"
 
     # ── Database ───────────────────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://ecomops:ecomops@localhost:5432/ecom_brain"

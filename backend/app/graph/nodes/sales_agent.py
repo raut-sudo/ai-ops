@@ -1,25 +1,10 @@
-"""Sales agent node stub.
-
-ReAct agent with sales tools. Returns DomainFinding for sales domain.
-"""
+"""Sales ReAct domain worker node."""
 
 from __future__ import annotations
 
-from app.schemas import DomainFinding
+from app.graph.nodes._react_domain import run_domain_react_agent
 
 
 async def sales_agent_node(state: dict) -> dict:
-    """Stub: sales investigation via tools."""
-    return {
-        "domain_findings": {
-            "sales": DomainFinding(
-                domain="sales",
-                findings=[],
-                metrics=[],
-                anomalies=[],
-                confidence=0.5,
-                tool_calls_made=[],
-                severity="low",
-            )
-        }
-    }
+    """Use ReAct + sales tools to produce DomainFinding."""
+    return await run_domain_react_agent(state, "sales")

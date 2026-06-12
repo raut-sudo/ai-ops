@@ -95,15 +95,43 @@ async def seed_incidents(session: AsyncSession) -> list[tuple[str, str]]:
 async def seed_qdrant_embeddings(
     incidents: list[tuple[str, str]],
 ) -> None:
-    """Embed incidents into Qdrant.
+    """Embed incidents into Qdrant using Azure OpenAI text-embedding-3-small.
 
-    This is called after seed_incidents() completes.
-    Requires:
-      - Qdrant service running
-      - Azure OpenAI embeddings configured
-      - Environment variables: OPENAI_API_KEY, OPENAI_API_BASE, etc.
-
-    NOTE: For MVP, this is stubbed. Post-MVP, integrate with Azure OpenAI.
+    Creates the collection if it does not exist, then upserts one point per
+    incident. Uses deterministic integer IDs (hash of incident string ID) so
+    re-seeding is idempotent.
     """
-    logger.info(f"Would embed {len(incidents)} incidents to Qdrant (not yet implemented)")
-    # TODO: Implement Qdrant upsert once embeddings pipeline is finalized
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.models import Distance, PointStruct, VectorParams
+
+    from app.config import settings
+    from app.embeddings import embed_text
+
+    client = AsyncQdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
+
+    # Ensure collection exists (idempotent)
+    existing = [c.name for c in (await client.get_collections()).collections]
+    if settings.QDRANT_COLLECTION not in existing:
+        await client.create_collection(
+            collection_name=settings.QDRANT_COLLECTION,
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+        )
+        logger.info(f"Created Qdrant collection '{settings.QDRANT_COLLECTION}'")
+
+    points: list[PointStruct] = []
+    for incident_id, summary in incidents:
+        vector = await embed_text(summary)
+        # Deterministic numeric ID from incident string id
+        numeric_id = abs(hash(incident_id)) % (2**53)
+        points.append(
+            PointStruct(
+                id=numeric_id,
+                vector=vector,
+                payload={"incident_id": incident_id, "summary": summary},
+            )
+        )
+        logger.info(f"  Embedded: {incident_id[:60]}…")
+
+    await client.upsert(collection_name=settings.QDRANT_COLLECTION, points=points)
+    count = (await client.count(settings.QDRANT_COLLECTION)).count
+    logger.info(f"Qdrant '{settings.QDRANT_COLLECTION}' now has {count} points")
