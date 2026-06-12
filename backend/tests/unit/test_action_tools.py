@@ -69,17 +69,33 @@ async def test_restock_product_writes_inventory_and_movement() -> None:
     assert after_qty == before_qty + 10
     assert int(move_row.movement_count) == 1
 
+    # ── Teardown: restore original quantity so subsequent tests see seed state ──
+    async with get_session() as session:
+        await session.execute(
+            text(
+                "UPDATE inventory SET quantity_on_hand = :qty, updated_at = NOW() WHERE sku = :sku"
+            ),
+            {"qty": before_qty, "sku": "SKU-101"},
+        )
+        await session.execute(
+            text("DELETE FROM inventory_movements WHERE reference_id = :aid"),
+            {"aid": action_id},
+        )
+        await session.commit()
+
 
 @pytest.mark.asyncio
 async def test_pause_and_activate_campaign() -> None:
     async with get_session() as session:
         campaign = (
             await session.execute(
-                text("SELECT id, status FROM campaigns WHERE name = :name LIMIT 1"),
+                text("SELECT id, status, paused_at FROM campaigns WHERE name = :name LIMIT 1"),
                 {"name": "Summer Sale"},
             )
         ).one()
         campaign_id = str(campaign.id)
+        original_status = campaign.status
+        original_paused_at = campaign.paused_at
 
     pause_proposal = ActionProposal(
         action_id=str(uuid.uuid4()),
@@ -116,6 +132,14 @@ async def test_pause_and_activate_campaign() -> None:
     assert pause_result.status == "executed"
     assert activate_result.status == "executed"
     assert status == "active"
+
+    # ── Teardown: restore original campaign state so seed scenario tests pass ──
+    async with get_session() as session:
+        await session.execute(
+            text("UPDATE campaigns SET status = :status, paused_at = :paused_at WHERE id = :id"),
+            {"status": original_status, "paused_at": original_paused_at, "id": campaign_id},
+        )
+        await session.commit()
 
 
 @pytest.mark.asyncio

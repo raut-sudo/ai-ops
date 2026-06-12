@@ -56,6 +56,18 @@ async def test_tool_read_write_roundtrip_inventory() -> None:
     assert after["quantity_on_hand"] == before["quantity_on_hand"] + 7
     assert int(movement_count) == 1
 
+    # Teardown: restore original quantity so seed-scenario tests are not polluted
+    async with get_session() as session:
+        await session.execute(
+            text("UPDATE inventory SET quantity_on_hand = :qty WHERE sku = :sku"),
+            {"qty": before["quantity_on_hand"], "sku": "SKU-101"},
+        )
+        await session.execute(
+            text("DELETE FROM inventory_movements WHERE reference_id = :aid"),
+            {"aid": action_id},
+        )
+        await session.commit()
+
 
 @pytest.mark.asyncio
 async def test_tool_reads_return_live_db_data() -> None:
