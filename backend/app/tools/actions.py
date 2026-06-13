@@ -20,13 +20,13 @@ from app.tools.base import tool_retry
 
 
 @tool_retry
-async def restock_product(proposal: ActionProposal) -> ActionResult:
+async def create_purchase_order(proposal: ActionProposal) -> ActionResult:
     params = proposal.parameters
     if not isinstance(params, RestockParams):
         return ActionResult(
             action_id=proposal.action_id,
             status="failed",
-            error="Invalid parameters for restock_product",
+            error="Invalid parameters for create_purchase_order",
         )
 
     try:
@@ -91,13 +91,13 @@ async def restock_product(proposal: ActionProposal) -> ActionResult:
 
 
 @tool_retry
-async def pause_campaign(proposal: ActionProposal) -> ActionResult:
+async def suspend_campaign(proposal: ActionProposal) -> ActionResult:
     params = proposal.parameters
-    if not isinstance(params, CampaignParams) or params.action_type != "pause_campaign":
+    if not isinstance(params, CampaignParams) or params.action_type != "suspend_campaign":
         return ActionResult(
             action_id=proposal.action_id,
             status="failed",
-            error="Invalid parameters for pause_campaign",
+            error="Invalid parameters for suspend_campaign",
         )
 
     try:
@@ -126,13 +126,13 @@ async def pause_campaign(proposal: ActionProposal) -> ActionResult:
 
 
 @tool_retry
-async def activate_campaign(proposal: ActionProposal) -> ActionResult:
+async def resume_campaign(proposal: ActionProposal) -> ActionResult:
     params = proposal.parameters
-    if not isinstance(params, CampaignParams) or params.action_type != "activate_campaign":
+    if not isinstance(params, CampaignParams) or params.action_type != "resume_campaign":
         return ActionResult(
             action_id=proposal.action_id,
             status="failed",
-            error="Invalid parameters for activate_campaign",
+            error="Invalid parameters for resume_campaign",
         )
 
     try:
@@ -161,13 +161,13 @@ async def activate_campaign(proposal: ActionProposal) -> ActionResult:
 
 
 @tool_retry
-async def apply_discount(proposal: ActionProposal) -> ActionResult:
+async def create_discount_offer(proposal: ActionProposal) -> ActionResult:
     params = proposal.parameters
     if not isinstance(params, DiscountParams):
         return ActionResult(
             action_id=proposal.action_id,
             status="failed",
-            error="Invalid parameters for apply_discount",
+            error="Invalid parameters for create_discount_offer",
         )
 
     campaign_id = str(uuid.uuid4())
@@ -210,13 +210,13 @@ async def apply_discount(proposal: ActionProposal) -> ActionResult:
 
 
 @tool_retry
-async def create_support_ticket(proposal: ActionProposal) -> ActionResult:
+async def open_customer_issue(proposal: ActionProposal) -> ActionResult:
     params = proposal.parameters
     if not isinstance(params, TicketParams):
         return ActionResult(
             action_id=proposal.action_id,
             status="failed",
-            error="Invalid parameters for create_support_ticket",
+            error="Invalid parameters for open_customer_issue",
         )
 
     ticket_number = f"TKT-AUTO-{uuid.uuid4().hex[:8].upper()}"
@@ -255,13 +255,13 @@ async def create_support_ticket(proposal: ActionProposal) -> ActionResult:
 
 
 @tool_retry
-async def send_alert(proposal: ActionProposal) -> ActionResult:
+async def notify_stakeholders(proposal: ActionProposal) -> ActionResult:
     params = proposal.parameters
     if not isinstance(params, AlertParams):
         return ActionResult(
             action_id=proposal.action_id,
             status="failed",
-            error="Invalid parameters for send_alert",
+            error="Invalid parameters for notify_stakeholders",
         )
 
     try:
@@ -298,10 +298,10 @@ async def send_alert(proposal: ActionProposal) -> ActionResult:
 
 
 ACTION_DISPATCH = {
-    "restock_product": restock_product,
-    "pause_campaign": pause_campaign,
-    "activate_campaign": activate_campaign,
-    "apply_discount": apply_discount,
-    "create_support_ticket": create_support_ticket,
-    "send_alert": send_alert,
+    "create_purchase_order": create_purchase_order,
+    "suspend_campaign": suspend_campaign,
+    "resume_campaign": resume_campaign,
+    "create_discount_offer": create_discount_offer,
+    "open_customer_issue": open_customer_issue,
+    "notify_stakeholders": notify_stakeholders,
 }

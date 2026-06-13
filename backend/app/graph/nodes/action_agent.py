@@ -90,7 +90,7 @@ def _proposals_from_synthesis(state: dict) -> list[ActionProposal]:
                     action_id=str(uuid.uuid4()),
                     target="marketing",
                     parameters=CampaignParams(
-                        action_type="activate_campaign",
+                        action_type="resume_campaign",
                         campaign_id=campaign_id,
                     ),
                     risk_level="medium",

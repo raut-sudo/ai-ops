@@ -4,7 +4,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
-from app.schemas import MetricSnapshot
 
 from .base import pct_delta, previous_window, resolve_period, tool_retry
 
@@ -73,106 +72,54 @@ async def _aggregate_sales(
 
 
 @tool_retry
-async def _get_sales_metrics_impl(
+async def _analyze_sales_impl(
     session: AsyncSession,
     period: str,
     region: str | None = None,
     sku: str | None = None,
-) -> list[MetricSnapshot]:
+    compare_previous: bool = True,
+) -> dict:
     start, end = resolve_period(period)
-    prev_start, prev_end = previous_window(start, end)
-
     current = await _aggregate_sales(session, start, end, region=region, sku=sku)
-    previous = await _aggregate_sales(session, prev_start, prev_end, region=region, sku=sku)
 
-    return [
-        MetricSnapshot(
-            name="revenue",
-            value=current["revenue"],
-            unit="USD",
-            period=period,
-            delta_pct=pct_delta(current["revenue"], previous["revenue"]),
-        ),
-        MetricSnapshot(
-            name="order_count",
-            value=current["order_count"],
-            unit="orders",
-            period=period,
-            delta_pct=pct_delta(current["order_count"], previous["order_count"]),
-        ),
-        MetricSnapshot(
-            name="average_order_value",
-            value=current["aov"],
-            unit="USD",
-            period=period,
-            delta_pct=pct_delta(current["aov"], previous["aov"]),
-        ),
-        MetricSnapshot(
-            name="units_sold",
-            value=current["units_sold"],
-            unit="units",
-            period=period,
-            delta_pct=pct_delta(current["units_sold"], previous["units_sold"]),
-        ),
-    ]
+    previous: dict[str, float] = {}
+    if compare_previous:
+        prev_start, prev_end = previous_window(start, end)
+        previous = await _aggregate_sales(session, prev_start, prev_end, region=region, sku=sku)
+
+    return {
+        "period": period,
+        "region": region,
+        "sku": sku,
+        "revenue": current["revenue"],
+        "order_count": current["order_count"],
+        "average_order_value": current["aov"],
+        "units_sold": current["units_sold"],
+        "revenue_delta_pct": pct_delta(current["revenue"], previous.get("revenue", 0))
+        if compare_previous
+        else None,
+        "order_count_delta_pct": pct_delta(current["order_count"], previous.get("order_count", 0))
+        if compare_previous
+        else None,
+        "aov_delta_pct": pct_delta(current["aov"], previous.get("aov", 0))
+        if compare_previous
+        else None,
+        "units_sold_delta_pct": pct_delta(current["units_sold"], previous.get("units_sold", 0))
+        if compare_previous
+        else None,
+    }
 
 
-async def get_sales_metrics(
+async def analyze_sales(
     period: str,
     region: str | None = None,
     sku: str | None = None,
-) -> list[MetricSnapshot]:
+    compare_previous: bool = True,
+) -> dict:
     async with get_session() as session:
-        return await _get_sales_metrics_impl(session, period, region=region, sku=sku)
-
-
-@tool_retry
-async def _compare_sales_periods_impl(
-    session: AsyncSession,
-    period_a: str,
-    period_b: str,
-) -> list[MetricSnapshot]:
-    a_start, a_end = resolve_period(period_a)
-    b_start, b_end = resolve_period(period_b)
-
-    metrics_a = await _aggregate_sales(session, a_start, a_end)
-    metrics_b = await _aggregate_sales(session, b_start, b_end)
-
-    return [
-        MetricSnapshot(
-            name="revenue",
-            value=metrics_a["revenue"],
-            unit="USD",
-            period=period_a,
-            delta_pct=pct_delta(metrics_a["revenue"], metrics_b["revenue"]),
-        ),
-        MetricSnapshot(
-            name="order_count",
-            value=metrics_a["order_count"],
-            unit="orders",
-            period=period_a,
-            delta_pct=pct_delta(metrics_a["order_count"], metrics_b["order_count"]),
-        ),
-        MetricSnapshot(
-            name="average_order_value",
-            value=metrics_a["aov"],
-            unit="USD",
-            period=period_a,
-            delta_pct=pct_delta(metrics_a["aov"], metrics_b["aov"]),
-        ),
-        MetricSnapshot(
-            name="units_sold",
-            value=metrics_a["units_sold"],
-            unit="units",
-            period=period_a,
-            delta_pct=pct_delta(metrics_a["units_sold"], metrics_b["units_sold"]),
-        ),
-    ]
-
-
-async def compare_sales_periods(period_a: str, period_b: str) -> list[MetricSnapshot]:
-    async with get_session() as session:
-        return await _compare_sales_periods_impl(session, period_a, period_b)
+        return await _analyze_sales_impl(
+            session, period, region=region, sku=sku, compare_previous=compare_previous
+        )
 
 
 @tool_retry
@@ -220,20 +167,111 @@ async def get_top_products(period: str, limit: int = 10) -> list[dict]:
 
 
 @tool_retry
-async def _get_sales_by_region_impl(session: AsyncSession, period: str) -> list[dict]:
+async def _get_declining_products_impl(
+    session: AsyncSession,
+    period: str,
+    limit: int = 10,
+) -> list[dict]:
     start, end = resolve_period(period)
+    prev_start, prev_end = previous_window(start, end)
 
     sql = text(
         """
+        WITH current_period AS (
+            SELECT
+                oi.sku,
+                COALESCE(SUM(oi.quantity), 0)   AS units,
+                COALESCE(SUM(oi.line_total), 0) AS revenue
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE o.placed_at >= :start
+              AND o.placed_at < :end
+              AND o.status NOT IN ('cancelled')
+            GROUP BY oi.sku
+        ),
+        prev_period AS (
+            SELECT
+                oi.sku,
+                COALESCE(SUM(oi.quantity), 0)   AS units,
+                COALESCE(SUM(oi.line_total), 0) AS revenue
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            WHERE o.placed_at >= :prev_start
+              AND o.placed_at < :prev_end
+              AND o.status NOT IN ('cancelled')
+            GROUP BY oi.sku
+        )
         SELECT
-            o.region,
-            COUNT(*) AS order_count,
-            COALESCE(SUM(o.total_amount), 0) AS revenue
+            c.sku,
+            p.name,
+            c.revenue  AS current_revenue,
+            pr.revenue AS prev_revenue,
+            c.units    AS current_units,
+            pr.units   AS prev_units
+        FROM current_period c
+        JOIN products p  ON p.sku  = c.sku
+        JOIN prev_period pr ON pr.sku = c.sku
+        WHERE c.revenue < pr.revenue
+           OR c.units   < pr.units
+        ORDER BY (c.revenue - pr.revenue) ASC
+        LIMIT :limit
+        """
+    )
+    rows = (
+        await session.execute(
+            sql,
+            {
+                "start": start,
+                "end": end,
+                "prev_start": prev_start,
+                "prev_end": prev_end,
+                "limit": limit,
+            },
+        )
+    ).all()
+
+    return [
+        {
+            "sku": row.sku,
+            "name": row.name,
+            "revenue_change_pct": pct_delta(float(row.current_revenue), float(row.prev_revenue)),
+            "units_change_pct": pct_delta(float(row.current_units), float(row.prev_units)),
+        }
+        for row in rows
+    ]
+
+
+async def get_declining_products(period: str, limit: int = 10) -> list[dict]:
+    async with get_session() as session:
+        return await _get_declining_products_impl(session, period, limit=limit)
+
+
+_ALLOWED_GROUP_BY = frozenset({"region", "channel"})
+
+
+@tool_retry
+async def _get_sales_distribution_impl(
+    session: AsyncSession,
+    period: str,
+    group_by: str = "region",
+) -> list[dict]:
+    if group_by not in _ALLOWED_GROUP_BY:
+        raise ValueError(f"group_by must be one of {sorted(_ALLOWED_GROUP_BY)}, got: {group_by!r}")
+
+    start, end = resolve_period(period)
+
+    # group_by is validated against a strict allowlist above — safe to interpolate
+    sql = text(
+        f"""
+        SELECT
+            o.{group_by}                         AS group_key,
+            COUNT(*)                              AS order_count,
+            COALESCE(SUM(o.total_amount), 0)      AS revenue
         FROM orders o
         WHERE o.placed_at >= :start
           AND o.placed_at < :end
           AND o.status NOT IN ('cancelled')
-        GROUP BY o.region
+        GROUP BY o.{group_by}
         ORDER BY revenue DESC
         """
     )
@@ -241,7 +279,7 @@ async def _get_sales_by_region_impl(session: AsyncSession, period: str) -> list[
 
     return [
         {
-            "region": row.region,
+            group_by: row.group_key,
             "order_count": int(row.order_count),
             "revenue": float(row.revenue),
         }
@@ -249,6 +287,6 @@ async def _get_sales_by_region_impl(session: AsyncSession, period: str) -> list[
     ]
 
 
-async def get_sales_by_region(period: str) -> list[dict]:
+async def get_sales_distribution(period: str, group_by: str = "region") -> list[dict]:
     async with get_session() as session:
-        return await _get_sales_by_region_impl(session, period)
+        return await _get_sales_distribution_impl(session, period, group_by=group_by)

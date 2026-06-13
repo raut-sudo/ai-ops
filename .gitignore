@@ -63,3 +63,5 @@ node_modules/
 yarn-error.log
 npm-debug.log
 .cache/
+graphify-out/
+.codemie/
