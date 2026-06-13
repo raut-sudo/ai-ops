@@ -6,6 +6,9 @@ Handles memory-recall intent when no domain findings are present.
 
 from __future__ import annotations
 
+import importlib
+
+from app.config import settings
 from app.schemas import RootCause, SynthesisResult
 
 
@@ -69,6 +72,82 @@ def _derive_root_causes(findings: dict) -> list[RootCause]:
     return causes
 
 
+def _deterministic_synthesis(findings: dict, memory) -> SynthesisResult:
+    root_causes = _derive_root_causes(findings)
+    domains_correlated = list(findings.keys())
+    snippets = _findings_text(findings)
+
+    explanation = (
+        "Correlated signals indicate multi-factor impact across domains. " + " ".join(snippets[:4])
+    ).strip()
+    if not snippets:
+        explanation = "No strong domain signals were available to produce a confident diagnosis."
+
+    recommendations: list[str] = []
+    if any(rc.domain == "inventory" for rc in root_causes):
+        recommendations.append("Restock impacted SKU and monitor stockout recurrence.")
+    if any(rc.domain == "marketing" for rc in root_causes):
+        recommendations.append("Re-activate or retune paused campaigns tied to the affected SKU.")
+    if not recommendations and memory:
+        recommendations.extend(memory.recommended_actions_from_history[:2])
+
+    confidence = 0.6
+    if root_causes:
+        confidence = min(0.93, sum(rc.confidence for rc in root_causes) / len(root_causes))
+
+    return SynthesisResult(
+        correlated_explanation=explanation,
+        root_causes=root_causes,
+        contributing_factors={d: "signal detected" for d in domains_correlated},
+        confidence_score=confidence,
+        recommendations=recommendations,
+        domains_correlated=domains_correlated,
+    )
+
+
+SYNTHESIS_SYSTEM_PROMPT = """\
+You are an expert e-commerce incident diagnosis synthesizer. \
+Analyze the following domain findings and produce a structured diagnosis. \
+Correlate signals across all domains, identify root causes with supporting evidence, \
+assess confidence, and recommend next steps.\
+"""
+
+
+async def _llm_synthesize(state: dict) -> SynthesisResult | None:
+    query = state.get("query", "")
+    findings = state.get("domain_findings", {}) or {}
+
+    if not findings:
+        return None
+
+    try:
+        AzureChatOpenAI = importlib.import_module("langchain_openai").AzureChatOpenAI
+        ChatPromptTemplate = importlib.import_module("langchain_core.prompts").ChatPromptTemplate
+
+        findings_text = "\n".join(_findings_text(findings))
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", SYNTHESIS_SYSTEM_PROMPT),
+                ("user", "Query: {query}\n\nDomain Findings:\n{findings}"),
+            ]
+        )
+
+        llm = AzureChatOpenAI(
+            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
+            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O,
+            temperature=0,
+        )
+        structured_llm = llm.with_structured_output(SynthesisResult)
+        messages = prompt.format_messages(query=query, findings=findings_text)
+        result = await structured_llm.ainvoke(messages)
+        return result
+    except Exception:
+        return None
+
+
 async def synthesizer_node(state: dict) -> dict:
     """Synthesize findings and memory into a structured diagnosis."""
     intent = state.get("intent")
@@ -110,35 +189,9 @@ async def synthesizer_node(state: dict) -> dict:
             )
         }
 
-    root_causes = _derive_root_causes(findings)
-    domains_correlated = list(findings.keys())
-    snippets = _findings_text(findings)
+    if settings.AZURE_OPENAI_API_KEY and settings.AZURE_OPENAI_ENDPOINT:
+        result = await _llm_synthesize(state)
+        if result is not None:
+            return {"synthesis": result}
 
-    explanation = (
-        "Correlated signals indicate multi-factor impact across domains. " + " ".join(snippets[:4])
-    ).strip()
-    if not snippets:
-        explanation = "No strong domain signals were available to produce a confident diagnosis."
-
-    recommendations: list[str] = []
-    if any(rc.domain == "inventory" for rc in root_causes):
-        recommendations.append("Restock impacted SKU and monitor stockout recurrence.")
-    if any(rc.domain == "marketing" for rc in root_causes):
-        recommendations.append("Re-activate or retune paused campaigns tied to the affected SKU.")
-    if not recommendations and memory:
-        recommendations.extend(memory.recommended_actions_from_history[:2])
-
-    confidence = 0.6
-    if root_causes:
-        confidence = min(0.93, sum(rc.confidence for rc in root_causes) / len(root_causes))
-
-    return {
-        "synthesis": SynthesisResult(
-            correlated_explanation=explanation,
-            root_causes=root_causes,
-            contributing_factors={d: "signal detected" for d in domains_correlated},
-            confidence_score=confidence,
-            recommendations=recommendations,
-            domains_correlated=domains_correlated,
-        )
-    }
+    return {"synthesis": _deterministic_synthesis(findings, memory)}

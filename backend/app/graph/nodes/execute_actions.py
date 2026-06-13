@@ -9,6 +9,15 @@ from app.db.session import get_session
 from app.schemas import ActionProposal, ActionResult
 from app.tools.actions import ACTION_DISPATCH
 
+ACTION_TYPE_TO_DISPATCH_KEY: dict[str, str] = {
+    "restock_product": "create_purchase_order",
+    "apply_discount": "create_discount_offer",
+    "suspend_campaign": "suspend_campaign",
+    "resume_campaign": "resume_campaign",
+    "create_support_ticket": "open_customer_issue",
+    "send_alert": "notify_stakeholders",
+}
+
 
 async def execute_actions_node(state: dict) -> dict:
     """Execute approved actions with DB-level idempotency guard.
@@ -62,7 +71,10 @@ async def execute_actions_node(state: dict) -> dict:
             continue
 
         try:
-            tool = ACTION_DISPATCH[proposal.action_type]
+            dispatch_key = ACTION_TYPE_TO_DISPATCH_KEY.get(proposal.action_type)
+            if dispatch_key is None:
+                raise ValueError(f"Unknown action_type: {proposal.action_type}")
+            tool = ACTION_DISPATCH[dispatch_key]
             result = await tool(proposal)
             final_status = result.status
         except Exception as exc:

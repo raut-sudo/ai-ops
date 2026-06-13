@@ -407,9 +407,10 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
                         *prior_messages,
                         domain_prompt,
                     ]
-                }
+                },
+                config={"recursion_limit": 21},
             ),
-            timeout=8.0,
+            timeout=60.0,
         )
         messages = result.get("messages", [])
         last_text = ""
@@ -429,10 +430,20 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
 
         if not last_text.strip():
             return await _fallback(state, domain)
-        parsed = _parse_domain_response(domain, last_text)
-        finding = parsed["domain_findings"][domain]
-        if finding.tool_calls_made:
-            return parsed
-        return await _fallback(state, domain)
+        return _parse_domain_response(domain, last_text)
     except Exception:
-        return await _fallback(state, domain)
+        return {
+            "domain_findings": {
+                domain: DomainFinding(
+                    domain=domain,  # type: ignore[arg-type]
+                    findings=["ReAct agent error; reflection will retry."],
+                    metrics=[
+                        MetricSnapshot(name="agent_error", value=1, unit="flag", period="runtime")
+                    ],
+                    anomalies=[],
+                    confidence=0.0,
+                    tool_calls_made=[],
+                    severity="low",
+                )
+            }
+        }
