@@ -14,6 +14,7 @@ Shutdown order:
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -37,6 +38,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup → yield → shutdown."""
     # ── Startup ──────────────────────────────────────────────────────────────
     configure_logging(log_level=settings.LOG_LEVEL, app_env=settings.APP_ENV)
+
+    # Honour LANGCHAIN_TRACING_V2=false — disable LangSmith if no key or disabled.
+    langsmith_enabled = settings.LANGCHAIN_TRACING_V2.lower() == "true" and bool(
+        settings.LANGSMITH_API_KEY
+    )
+    os.environ["LANGCHAIN_TRACING_V2"] = "true" if langsmith_enabled else "false"
+    if not langsmith_enabled:
+        os.environ.pop("LANGCHAIN_API_KEY", None)
+        os.environ.pop("LANGSMITH_API_KEY", None)
     await setup_checkpointer()
     await compile_graph_singleton()
     setup_tracing(app)

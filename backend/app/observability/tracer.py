@@ -22,7 +22,9 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+)
 
 from app.config import settings
 
@@ -43,32 +45,41 @@ def _langfuse_auth_header() -> str | None:
 
 
 def init_otel() -> TracerProvider:
-    """Initialise and register the global OTel tracer provider."""
+    """Initialise and register the global OTel tracer provider.
+
+    If Langfuse credentials are not configured the provider is still created
+    (so instrumentation works) but no remote exporter is attached — avoids
+    spamming 401 errors for deployments without observability credentials.
+    """
     global _provider
 
     resource = Resource.create({"service.name": settings.OTEL_SERVICE_NAME})
-
-    headers: dict[str, str] = {}
-    auth = _langfuse_auth_header()
-    if auth:
-        headers["Authorization"] = auth
-
-    exporter = OTLPSpanExporter(
-        endpoint=settings.LANGFUSE_OTEL_ENDPOINT,
-        headers=headers,
-    )
-
     provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    auth = _langfuse_auth_header()
+    if auth and settings.LANGFUSE_OTEL_ENDPOINT:
+        headers: dict[str, str] = {"Authorization": auth}
+        exporter = OTLPSpanExporter(
+            endpoint=settings.LANGFUSE_OTEL_ENDPOINT,
+            headers=headers,
+        )
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        log.info(
+            "otel.tracing.configured",
+            service=settings.OTEL_SERVICE_NAME,
+            otlp_endpoint=settings.LANGFUSE_OTEL_ENDPOINT,
+            auth_header_set=True,
+        )
+    else:
+        # No credentials — run with no-op exporter to avoid 401 spam.
+        log.info(
+            "otel.tracing.noop",
+            service=settings.OTEL_SERVICE_NAME,
+            reason="LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY not set",
+        )
+
     trace.set_tracer_provider(provider)
     _provider = provider
-
-    log.info(
-        "otel.tracing.configured",
-        service=settings.OTEL_SERVICE_NAME,
-        otlp_endpoint=settings.LANGFUSE_OTEL_ENDPOINT,
-        auth_header_set=bool(auth),
-    )
     return provider
 
 

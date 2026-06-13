@@ -57,17 +57,22 @@ services:
         condition: service_started
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
 
-  # Frontend shell (Sprint 0 scaffold placeholder).
   frontend:
-    image: node:22-alpine
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.frontend
+      args:
+        BACKEND_URL: http://backend:8000
     container_name: ai-ops-frontend
     restart: unless-stopped
-    working_dir: /workspace
-    volumes:
-      - ./frontend:/workspace
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
-    command: ["sh", "-c", "echo 'Frontend scaffold not yet implemented (Sprint 0 shell).' && tail -f /dev/null"]
+    environment:
+      BACKEND_URL: http://backend:8000
+      NODE_ENV: production
+    depends_on:
+      backend:
+        condition: service_started
 
 volumes:
   pgdata:

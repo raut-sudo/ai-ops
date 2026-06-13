@@ -37,6 +37,27 @@ async def setup_checkpointer() -> object | None:
     saver_cm = AsyncPostgresSaver.from_conn_string(_checkpoint_conn_string())
     _checkpointer = await _exit_stack.enter_async_context(saver_cm)
     await _checkpointer.setup()
+
+    # Register app schema types so LangGraph checkpoint serde doesn't warn
+    # about "unregistered type" on every deserialization (§30.2 / LG 1.2.4).
+    try:
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+        _ALLOWED = [
+            "app.schemas",
+            "app.graph.state",
+        ]
+        serde = _checkpointer.serde
+        if isinstance(serde, JsonPlusSerializer):
+            for mod in _ALLOWED:
+                if mod not in (getattr(serde, "allowed_msgpack_modules", None) or []):
+                    serde.allowed_msgpack_modules = [
+                        *getattr(serde, "allowed_msgpack_modules", []),
+                        mod,
+                    ]
+    except Exception:
+        pass  # Best-effort; serde API varies across LG versions
+
     log.info("graph.checkpointer.ready")
     return _checkpointer
 

@@ -241,6 +241,7 @@ async def test_persist_incident_qdrant_outage_does_not_fail_response() -> None:
     session_id = f"qdrant-outage-{uuid.uuid4()}"
 
     state = {
+        "messages": [],
         "session_id": session_id,
         "query": "Why did sales drop?",
         "thread_id": "qdrant-outage-thread",
@@ -313,6 +314,7 @@ async def test_persist_incident_complete_outage_does_not_fail_response() -> None
     session_id = f"full-outage-{uuid.uuid4()}"
 
     state = {
+        "messages": [],
         "session_id": session_id,
         "query": "Why did sales drop?",
         "thread_id": "full-outage-thread",

@@ -10,3 +10,24 @@ services:
       # Mount source code for hot-reload (--reload flag in base compose command)
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
+
+  frontend:
+    # In dev: skip the multi-stage build and run pnpm dev directly from source.
+    # Override the production image with a plain node image + volume mount.
+    image: node:22-alpine
+    build: !reset null
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  # anonymous volume — don't shadow host node_modules
+    working_dir: /app
+    environment:
+      BACKEND_URL: http://backend:8000
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+    command: >
+      sh -c "
+        corepack enable &&
+        corepack prepare pnpm@11.6.0 --activate &&
+        pnpm install --ignore-scripts &&
+        BACKEND_URL=http://backend:8000 pnpm dev
+      "

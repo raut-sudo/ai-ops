@@ -313,14 +313,18 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
             temperature=0,
         )
         agent = create_react_agent(model=llm, tools=_domain_tools(domain))
+
+        # Prepend conversation history so the ReAct agent is aware of prior
+        # turns (e.g. "same thing for inventory" resolves against the history).
+        prior_messages = state.get("messages", [])
+        domain_prompt = {"role": "user", "content": _prompt(domain, state.get("query", ""))}
+
         result = await asyncio.wait_for(
             agent.ainvoke(
                 {
                     "messages": [
-                        {
-                            "role": "user",
-                            "content": _prompt(domain, state.get("query", "")),
-                        }
+                        *prior_messages,
+                        domain_prompt,
                     ]
                 }
             ),

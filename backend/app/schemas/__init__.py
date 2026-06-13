@@ -176,9 +176,15 @@ class FinalResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """POST /chat request body."""
+    """POST /chat request body.
+
+    thread_id is optional.  When provided the server reuses the existing
+    checkpoint, appending the new HumanMessage so the conversation continues.
+    When omitted a fresh thread_id (UUID4) is generated — starts a new chat.
+    """
 
     query: str
+    thread_id: str | None = None
 
 
 class ApproveRequest(BaseModel):

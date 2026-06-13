@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import text
 
 from app.db.session import get_session
@@ -167,6 +168,18 @@ async def _event_generator(
         # Terminal: graph completed — emit final.
         fr = snapshot.values.get("final_response")
         fr_payload = fr.model_dump() if hasattr(fr, "model_dump") else fr or {}
+
+        # Append AI summary as an AIMessage so future turns see it in history.
+        summary = fr_payload.get("summary", "") if isinstance(fr_payload, dict) else ""
+        if summary:
+            try:
+                await graph.aupdate_state(
+                    config,
+                    {"messages": [AIMessage(content=summary)]},
+                )
+            except Exception:
+                pass  # Best-effort — do not fail the response
+
         yield _ndjson({"type": "final", "final_response": fr_payload})
 
 
@@ -174,32 +187,46 @@ async def _event_generator(
 async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     """Start a diagnosis; returns an NDJSON stream of agent steps.
 
+    If the request includes a thread_id the server reuses the existing
+    checkpoint (conversational memory).  If omitted a new UUID is generated.
+
     Terminal event is either hitl_pending (graph paused) or final (graph done).
     Never both, never neither (§30.11).
     """
     user_id: str = request.state.user_id
-    thread_id = str(uuid.uuid4())
+    # Reuse caller-supplied thread_id for multi-turn, or start fresh.
+    thread_id: str = body.thread_id or str(uuid.uuid4())
 
-    # ── Create sessions row (Layer 2) ────────────────────────────────────────
+    # ── Upsert sessions row (Layer 2) ─────────────────────────────────────
     async with get_session() as session:
         await session.execute(
             text(
                 """
-                INSERT INTO sessions (thread_id, user_id, query, status, created_at, updated_at)
-                VALUES (:thread_id, :user_id, :query, 'active', NOW(), NOW())
-                ON CONFLICT (thread_id) DO NOTHING
+                INSERT INTO sessions (id, thread_id, user_id, query, status, created_at, updated_at)
+                VALUES (:id, :thread_id, :user_id, :query, 'active', NOW(), NOW())
+                ON CONFLICT (thread_id) DO UPDATE
+                    SET query = EXCLUDED.query,
+                        updated_at = NOW()
                 """
             ),
-            {"thread_id": thread_id, "user_id": user_id, "query": body.query},
+            {
+                "id": str(uuid.uuid4()),
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "query": body.query,
+            },
         )
         await session.commit()
 
-    # ── Build initial AgentState ─────────────────────────────────────────────
+    # ── Build initial AgentState ─────────────────────────────────────────
+    # messages only contains the new HumanMessage; the add_messages reducer
+    # will merge this with the persisted history from the checkpoint.
     initial_state: dict = {
         "session_id": thread_id,
         "thread_id": thread_id,
         "user_id": user_id,
         "query": body.query,
+        "messages": [HumanMessage(content=body.query)],
         "retry_count": 0,
         "domain_findings": {},
         "proposed_actions": [],
