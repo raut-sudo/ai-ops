@@ -29,6 +29,7 @@ def _base_state() -> dict:
     from datetime import datetime
 
     return {
+        "messages": [],
         "query": "Test query",
         "session_id": "test-session",
         "thread_id": "test-thread",

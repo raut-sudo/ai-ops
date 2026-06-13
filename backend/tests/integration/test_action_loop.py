@@ -78,6 +78,7 @@ def _make_full_state(
     )
 
     return {
+        "messages": [],
         "query": "Why did sales drop yesterday?",
         "session_id": f"session-{thread_id}",
         "thread_id": thread_id,
@@ -274,6 +275,7 @@ async def test_action_agent_proposes_restock_for_stockout_root_cause() -> None:
         await session.commit()
 
     state = {
+        "messages": [],
         "session_id": f"session-{thread_id}",
         "thread_id": thread_id,  # _persist_proposed_actions uses thread_id for session_id FK
         "user_id": "test-user",
@@ -365,6 +367,7 @@ async def test_persist_incident_writes_to_postgres() -> None:
     session_id = f"persist-test-{uuid.uuid4()}"
 
     state = {
+        "messages": [],
         "session_id": session_id,
         "query": "Why did sales drop?",
         "thread_id": "persist-thread",

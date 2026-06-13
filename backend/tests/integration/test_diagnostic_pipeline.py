@@ -109,6 +109,7 @@ async def test_golden_trace_reaches_action_agent_with_two_root_causes() -> None:
     graph = build_graph().compile()
 
     initial_state = {
+        "messages": [],
         "query": "Why did sales drop yesterday for SKU-101?",
         "session_id": "diag-session-001",
         "thread_id": "diag-thread-001",
@@ -190,6 +191,7 @@ async def test_retry_path_targets_only_requested_domains() -> None:
     from app.graph import edges
 
     state = {
+        "messages": [],
         "query": "Why did sales drop yesterday?",
         "session_id": "diag-session-002",
         "thread_id": "diag-thread-002",
@@ -238,6 +240,7 @@ async def test_retry_count_increments_on_reflection() -> None:
     from app.graph.nodes.reflection import reflection_node
 
     state = {
+        "messages": [],
         "query": "Why did sales drop?",
         "session_id": "s",
         "thread_id": "t",
@@ -277,6 +280,7 @@ async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
     from app.graph import edges
 
     state = {
+        "messages": [],
         "query": "Why did sales drop?",
         "session_id": "s",
         "thread_id": "t",

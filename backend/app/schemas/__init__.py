@@ -172,12 +172,39 @@ class FinalResponse(BaseModel):
     generated_at: datetime = Field(default_factory=_utcnow)
 
 
+# ── API request/response schemas (Sprint 7) ──────────────────────────────────
+
+
+class ChatRequest(BaseModel):
+    """POST /chat request body.
+
+    thread_id is optional.  When provided the server reuses the existing
+    checkpoint, appending the new HumanMessage so the conversation continues.
+    When omitted a fresh thread_id (UUID4) is generated — starts a new chat.
+    """
+
+    query: str
+    thread_id: str | None = None
+
+
+class ApproveRequest(BaseModel):
+    """POST /approve request body.
+
+    thread_id lives here (not in HITLDecision — that schema is FROZEN).
+    """
+
+    thread_id: str
+    decision: HITLDecision
+
+
 __all__ = [
     "ActionParams",
     "ActionProposal",
     "ActionResult",
     "AlertParams",
+    "ApproveRequest",
     "CampaignParams",
+    "ChatRequest",
     "DiscountParams",
     "Domain",
     "DomainFinding",

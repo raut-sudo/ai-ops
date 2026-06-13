@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from app.schemas import (
@@ -27,6 +29,10 @@ def merge_domain_findings(
 
 
 class AgentState(TypedDict):
+    # ── Conversational memory (multi-turn, checkpointed) ──────────────────
+    # AsyncPostgresSaver persists this across process restarts.
+    messages: Annotated[list[AnyMessage], add_messages]
+
     # Input
     query: str
     session_id: str

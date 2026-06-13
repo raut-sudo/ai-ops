@@ -80,6 +80,31 @@ def configure_logging(log_level: str = "INFO", app_env: str = "development") -> 
                     "handlers": [],
                     "level": "WARNING",
                 },
+                # Silence 401/auth noise from optional observability exporters.
+                # These fire when Langfuse/LangSmith credentials are absent or
+                # expired; they don't affect app functionality.
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter": {
+                    "propagate": False,
+                    "handlers": [],
+                    "level": "CRITICAL",
+                },
+                "langsmith.client": {
+                    "propagate": False,
+                    "handlers": [],
+                    "level": "CRITICAL",
+                },
+                "urllib3.connectionpool": {
+                    "propagate": True,
+                    "handlers": [],
+                    "level": "WARNING",
+                },
+                # Silence LangGraph checkpoint serde warnings about unregistered
+                # custom types — they're expected with app.schemas objects.
+                "langgraph.checkpoint.serde.jsonplus": {
+                    "propagate": False,
+                    "handlers": [],
+                    "level": "ERROR",
+                },
             },
         }
     )

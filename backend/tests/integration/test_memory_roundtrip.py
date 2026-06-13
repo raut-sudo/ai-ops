@@ -28,6 +28,7 @@ async def test_memory_roundtrip_retrieves_seeded_sku202_incident() -> None:
         pytest.skip("Postgres not running — memory roundtrip requires a live DB")
 
     state = {
+        "messages": [],
         "query": "We are seeing a stockout incident similar to SKU-202 from before.",
         "session_id": "mem-session-001",
         "thread_id": "mem-thread-001",
