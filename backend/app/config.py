@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     AZURE_OPENAI_DEPLOYMENT_GPT4O: str = "gpt-4o"
     AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI: str = "gpt-4.1-mini-2025-04-14"
     AZURE_OPENAI_DEPLOYMENT_EMBEDDING: str = "text-embedding-3-small-1"
+    AZURE_TEMPERATURE: float = 0.0
 
     # ── Database ───────────────────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://ecomops:ecomops@localhost:5432/ecom_brain"
@@ -66,14 +67,7 @@ class Settings(BaseSettings):
     LANGSMITH_API_KEY: str = ""
     LANGSMITH_PROJECT: str = "ai-ops-brain"
     LANGCHAIN_TRACING_V2: str = "true"
-
-    LANGFUSE_PUBLIC_KEY: str = ""
-    LANGFUSE_SECRET_KEY: str = ""
-    LANGFUSE_HOST: str = "https://cloud.langfuse.com"
-    LANGFUSE_OTEL_ENDPOINT: str = "https://cloud.langfuse.com/api/public/otel/v1/traces"
-
-    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4318"
-    OTEL_SERVICE_NAME: str = "ai-ops-backend"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # ── Security ───────────────────────────────────────────────────────────────
     JWT_SECRET_KEY: str = "change-me-in-production"

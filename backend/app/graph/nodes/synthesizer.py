@@ -1,105 +1,126 @@
-"""Synthesizer node.
+"""Synthesizer node — agentic cross-domain correlation.
 
-Correlates domain findings and memory context into a diagnosis via LLM.
-No deterministic fallback — all root cause reasoning is LLM-driven.
+Uses create_agent (LangChain v1) with a ``get_domain_finding`` inspection tool
+so the synthesizer can drill into any domain's full finding on demand, rather
+than receiving a flat text dump it cannot re-query.
+
+The structured response_format=SynthesisResult ensures the output is always
+a validated schema — no JSON parsing brittle-ness.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import structlog
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.agents import create_agent
+from langchain_core.tools import StructuredTool
 from langchain_openai import AzureChatOpenAI
+from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.schemas import SynthesisResult
+from app.graph.prompts import load_prompt
+from app.schemas import DomainFinding, SynthesisResult
 
 logger = structlog.get_logger(__name__)
 
 
-def _findings_text(findings: dict) -> list[str]:
-    texts: list[str] = []
+class GetDomainFindingArgs(BaseModel):
+    domain: str = Field(
+        description="Domain name to inspect: sales, inventory, marketing, or support"
+    )
 
+
+def _make_get_domain_finding_tool(findings: dict[str, DomainFinding]) -> StructuredTool:
+    """Build a closure tool that exposes the current invocation's findings."""
+
+    async def _get_domain_finding(domain: str) -> str:
+        """Return the full DomainFinding JSON for a specific domain."""
+        finding = findings.get(domain)
+        if finding is None:
+            available = list(findings.keys())
+            return json.dumps(
+                {"error": f"No finding for domain '{domain}'. Available: {available}"}
+            )
+        return finding.model_dump_json(indent=2)
+
+    return StructuredTool.from_function(
+        coroutine=_get_domain_finding,
+        name="get_domain_finding",
+        description=(
+            "Access the full DomainFinding for a specific domain agent's investigation. "
+            "Use this to inspect the detailed findings, metrics, and anomalies for a "
+            "domain when the initial summary is insufficient for root cause correlation."
+        ),
+        args_schema=GetDomainFindingArgs,
+    )
+
+
+def _build_context_message(
+    query: str,
+    findings: dict[str, DomainFinding],
+    memory_context,
+) -> str:
+    """Assemble the user message with summaries of all available findings."""
+    parts = [f"Query: {query}\n"]
+
+    parts.append("Domain findings summary (use get_domain_finding for full details):")
     for domain, df in findings.items():
-        for item in df.findings:
-            texts.append(f"[{domain}] {item}")
+        parts.append(
+            f"  [{domain}] severity={df.severity} confidence={df.confidence:.2f} "
+            f"findings={len(df.findings)} anomalies={len(df.anomalies)}"
+        )
 
-        for anomaly in df.anomalies:
-            texts.append(f"[{domain}] anomaly: {anomaly}")
+    if memory_context and memory_context.past_incidents:
+        parts.append(f"\nPast incidents: {len(memory_context.past_incidents)} relevant found.")
+        for inc in memory_context.past_incidents[:2]:
+            parts.append(f"  [{inc.occurred_at}] {inc.summary}")
 
-    return texts
+    return "\n".join(parts)
 
 
 SYNTHESIS_SYSTEM_PROMPT = """\
 You are the synthesis layer of an e-commerce operations assistant.
 
-You receive findings from domain agents (sales, inventory, marketing, support) and the user's query.
+You receive a summary of domain agent findings and the user's query.
+Use the ``get_domain_finding`` tool whenever you need the full details for a
+specific domain (its metrics, anomalies, and raw findings).
 
 FIRST, classify the situation:
-- If the query is a DIAGNOSTIC question (something is wrong: a drop, anomaly, stockout,
-complaint spike, "why did X happen") → produce root_causes that CORRELATE signals across
-domains, with evidence and confidence. Explain how signals interact.
+- If the query is a DIAGNOSTIC question (something is wrong: a drop, anomaly,
+  stockout, complaint spike, "why did X happen") → produce root_causes that
+  CORRELATE signals across domains. Explain how signals interact.
 
-- If the query is a LOOKUP / REPORTING question
-(e.g., "what is the highest selling product", "what is the inventory status")
-→ there is NO root cause.
-Set root_causes to an EMPTY list.
-Put the direct factual answer in correlated_explanation.
-Set confidence_score high (0.9+) if the findings clearly answer the question.
+- If the query is a LOOKUP / REPORTING question (e.g., "what is the highest
+  selling product", "what is the inventory status") → there is NO root cause.
+  Set root_causes to an EMPTY list.
+  Put the direct factual answer in correlated_explanation.
+  Set confidence_score high (0.9+) if the findings clearly answer the question.
 
 RULES:
 - NEVER invent a root cause for a question that is just asking for information.
-- correlated_explanation must DIRECTLY answer the user's actual question in plain language.
-Do NOT prefix it with boilerplate like "Correlated signals indicate multi-factor impact."
-- Only mention domains that are RELEVANT to the query. Ignore irrelevant domain findings.
-- If a domain finding says "agent error" or "unavailable", IGNORE it —
-do not surface errors to the user and do not treat them as signals.
+- correlated_explanation must DIRECTLY answer the user's actual question.
+- Do NOT prefix it with boilerplate like "Correlated signals indicate..."
+- Only mention domains that are RELEVANT to the query.
+- Ignore domain findings with confidence < 0.2 (they are error signals).
 - recommendations should be empty for pure lookups.
-
-Return structured output matching the schema.
 """
 
 
-# Build prompt once
-prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", SYNTHESIS_SYSTEM_PROMPT),
-        (
-            "human",
-            "Query: {query}\n\nDomain Findings:\n{findings}",
-        ),
-    ]
-)
-
-
-# Build model once
-llm = AzureChatOpenAI(
-    azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-    api_key=settings.AZURE_OPENAI_API_KEY,
-    api_version=settings.AZURE_OPENAI_API_VERSION,
-    azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI,
-    temperature=0,
-)
-
-
-# Build chain once
-# method="function_calling" avoids strict JSON-schema validation that rejects
-# dict[str, str] (contributing_factors) in OpenAI's structured-output mode.
-synthesis_chain = prompt | llm.with_structured_output(SynthesisResult, method="function_calling")
-
-
 async def synthesizer_node(state: dict) -> dict:
-    """Synthesize findings and memory into a structured diagnosis via LLM.
+    """Synthesize domain findings + memory into a structured diagnosis.
 
-    If the LLM is unavailable or raises, returns a low-confidence SynthesisResult
-    so the graph can continue (reflection will decide whether to retry or fail).
+    Uses create_agent so the synthesizer can call get_domain_finding to inspect
+    any domain's full data before outputting a SynthesisResult.
+    Falls back to a low-confidence result on error so reflection can retry.
     """
-
-    findings = state.get("domain_findings", {}) or {}
-    query = state.get("query", "")
+    findings: dict = state.get("domain_findings", {}) or {}
+    query: str = state.get("query", "")
+    memory_context = state.get("memory_context")
 
     if not findings:
         logger.warning("synthesizer_no_findings", query=query)
-
         return {
             "synthesis": SynthesisResult(
                 correlated_explanation="No domain findings were available to synthesize.",
@@ -112,28 +133,42 @@ async def synthesizer_node(state: dict) -> dict:
         }
 
     try:
-        findings_text = "\n".join(_findings_text(findings))
-
-        result = await synthesis_chain.ainvoke(
-            {
-                "query": query,
-                "findings": findings_text,
-            }
+        llm = AzureChatOpenAI(
+            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
+            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O,
+            temperature=settings.AZURE_TEMPERATURE,
         )
 
-        logger.info("synthesizer_llm_success")
+        # Build the inspection tool with a closure over the current findings
+        domain_tool = _make_get_domain_finding_tool(findings)
+        context_msg = _build_context_message(query, findings, memory_context)
 
-        return {
-            "synthesis": result,
-        }
+        agent = create_agent(
+            llm,
+            tools=[domain_tool],
+            system_prompt=load_prompt("synthesizer_agent"),
+            response_format=SynthesisResult,
+        )
+
+        result = await asyncio.wait_for(
+            agent.ainvoke(
+                {"messages": [{"role": "user", "content": context_msg}]},
+                config={"recursion_limit": 15},
+            ),
+            timeout=60.0,
+        )
+
+        synthesis: SynthesisResult = result["structured_response"]
+        if synthesis is None:
+            raise ValueError("structured_response was None")
+
+        logger.info("synthesizer_success", confidence=synthesis.confidence_score)
+        return {"synthesis": synthesis}
 
     except Exception as exc:
-        logger.warning(
-            "synthesizer_llm_failed",
-            error=str(exc),
-            exc_info=True,
-        )
-
+        logger.warning("synthesizer_failed", error=str(exc), exc_info=True)
         return {
             "synthesis": SynthesisResult(
                 correlated_explanation="Synthesis could not be completed due to an LLM error.",

@@ -1,50 +1,70 @@
+"""Tests for domain agent error handling after _react_domain refactor.
+
+Verifies that each domain agent node returns a valid low-confidence
+DomainFinding when the underlying LLM call fails, rather than crashing
+or returning None.
+"""
+
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.graph.nodes._react_domain import run_domain_react_agent
+from app.graph.nodes.inventory_agent import inventory_agent_node
+from app.graph.nodes.sales_agent import sales_agent_node
 
 
 @pytest.mark.asyncio
-async def test_exception_returns_error_finding() -> None:
+async def test_inventory_agent_exception_returns_error_finding() -> None:
+    """When create_agent.ainvoke raises, inventory_agent_node returns an
+    explicit low-confidence error DomainFinding instead of propagating."""
     state = {"query": "test", "messages": []}
 
-    patch_credentials = patch(
-        "app.graph.nodes._react_domain.settings.AZURE_OPENAI_API_KEY", "test-key"
-    )
-    patch_endpoint = patch(
-        "app.graph.nodes._react_domain.settings.AZURE_OPENAI_ENDPOINT",
-        "https://test.openai.azure.com",
-    )
-    patch_wait_for = patch(
-        "app.graph.nodes._react_domain.asyncio.wait_for",
-        side_effect=RuntimeError("simulated agent failure"),
-    )
+    mock_agent = AsyncMock()
+    mock_agent.ainvoke.side_effect = RuntimeError("simulated LLM failure")
 
-    with patch_credentials, patch_endpoint, patch_wait_for:
-        result = await run_domain_react_agent(state, "inventory")
+    with patch("app.graph.nodes.inventory_agent.create_agent", return_value=mock_agent):
+        result = await inventory_agent_node(state)
 
-    # Fix D: exception → _fallback returns deterministic finding, not error DomainFinding
     finding = result["domain_findings"]["inventory"]
-    assert finding.confidence > 0.0
-    assert len(finding.tool_calls_made) > 0
+    assert finding is not None
+    assert finding.confidence == 0.1
+    assert finding.severity == "low"
+    assert any("Agent error" in f for f in finding.findings)
+    assert finding.tool_calls_made == []
 
 
 @pytest.mark.asyncio
-async def test_no_credentials_triggers_fallback() -> None:
+async def test_sales_agent_exception_returns_error_finding() -> None:
+    """When create_agent.ainvoke raises, sales_agent_node returns an
+    explicit low-confidence error DomainFinding."""
     state = {"query": "test", "messages": []}
 
-    patch_key = patch("app.graph.nodes._react_domain.settings.AZURE_OPENAI_API_KEY", "")
-    patch_endpoint = patch("app.graph.nodes._react_domain.settings.AZURE_OPENAI_ENDPOINT", "")
-    patch_fallback = patch(
-        "app.graph.nodes._react_domain._fallback",
-        return_value={"domain_findings": {"inventory": None}},
-    )
+    mock_agent = AsyncMock()
+    mock_agent.ainvoke.side_effect = RuntimeError("simulated LLM failure")
 
-    with patch_key, patch_endpoint, patch_fallback as fallback:
-        result = await run_domain_react_agent(state, "inventory")
+    with patch("app.graph.nodes.sales_agent.create_agent", return_value=mock_agent):
+        result = await sales_agent_node(state)
 
-    fallback.assert_awaited_once()
-    assert "inventory" in result["domain_findings"]
+    finding = result["domain_findings"]["sales"]
+    assert finding is not None
+    assert finding.confidence == 0.1
+    assert finding.severity == "low"
+    assert any("Agent error" in f for f in finding.findings)
+
+
+@pytest.mark.asyncio
+async def test_inventory_agent_none_structured_response_returns_error_finding() -> None:
+    """When structured_response is None (LLM skipped output schema), the agent
+    falls back to an error finding rather than crashing."""
+    state = {"query": "test", "messages": []}
+
+    mock_agent = AsyncMock()
+    mock_agent.ainvoke.return_value = {"structured_response": None}
+
+    with patch("app.graph.nodes.inventory_agent.create_agent", return_value=mock_agent):
+        result = await inventory_agent_node(state)
+
+    finding = result["domain_findings"]["inventory"]
+    assert finding.confidence == 0.1

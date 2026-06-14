@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC
 
 from app.graph.edges import (
-    route_after_intent,
+    route_after_orchestrator,
     route_after_reflection,
 )
 from app.schemas import (
@@ -48,7 +48,7 @@ def _base_state() -> dict:
 
 
 class TestRouteAfterIntent:
-    """Test routing immediately after intent classification."""
+    """Test routing immediately after orchestrator classification."""
 
     def test_irrelevant_intent_goes_to_aggregator(self):
         """Irrelevant intent → aggregator (skip investigation)."""
@@ -62,7 +62,7 @@ class TestRouteAfterIntent:
             confidence=0.95,
         )
 
-        result = route_after_intent(state)
+        result = route_after_orchestrator(state)
         assert result == "aggregator"
 
     def test_memory_recall_goes_to_memory_retrieve(self):
@@ -77,7 +77,7 @@ class TestRouteAfterIntent:
             confidence=0.9,
         )
 
-        result = route_after_intent(state)
+        result = route_after_orchestrator(state)
         assert result == "memory_retrieve"
 
     def test_business_diagnosis_fans_out_to_domains(self):
@@ -92,9 +92,7 @@ class TestRouteAfterIntent:
             confidence=0.9,
         )
 
-        result = route_after_intent(state)
-
-        # Result should be a list of Send commands
+        result = route_after_orchestrator(state)
         assert isinstance(result, list)
         assert len(result) >= 2  # At least sales + inventory + memory
 
@@ -116,7 +114,7 @@ class TestRouteAfterIntent:
         )
         state["retry_count"] = 1  # Already on retry
 
-        result = route_after_intent(state)
+        result = route_after_orchestrator(state)
 
         assert isinstance(result, list)
         node_names = [send.node for send in result]
@@ -135,7 +133,7 @@ class TestRouteAfterIntent:
             confidence=0.8,
         )
 
-        result = route_after_intent(state)
+        result = route_after_orchestrator(state)
         assert result == "aggregator"
 
 

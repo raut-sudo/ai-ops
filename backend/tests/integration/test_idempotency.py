@@ -19,8 +19,8 @@ from sqlalchemy import text
 from app.db.models import IncidentAction
 from app.db.models import Session as SessionModel
 from app.db.session import get_session
-from app.graph.nodes.aggregator import aggregator_node
 from app.graph.nodes.reflection import _execute_approved_actions
+from app.graph.nodes.response_composer import response_composer_node
 from app.schemas import (
     ActionProposal,
     HITLDecision,
@@ -290,15 +290,19 @@ async def test_aggregator_qdrant_outage_does_not_fail_response() -> None:
     # Qdrant raises — embed_text returns a valid vector but qdrant_upsert fails
     with (
         patch(
-            "app.graph.nodes.aggregator.embed_text",
+            "app.graph.nodes.response_composer.embed_text",
             new=AsyncMock(return_value=[0.0] * 1536),
         ),
         patch(
-            "app.graph.nodes.aggregator.qdrant_upsert",
+            "app.graph.nodes.response_composer.qdrant_upsert",
             new=AsyncMock(side_effect=Exception("Qdrant connection refused")),
         ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout caused decline."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     # Must return final_response without raising
     assert result["final_response"] is not None
@@ -368,11 +372,17 @@ async def test_aggregator_complete_outage_does_not_fail_response() -> None:
     }
 
     # Patch get_session at the module level to simulate DB outage
-    with patch(
-        "app.graph.nodes.aggregator.get_session",
-        side_effect=Exception("DB connection refused"),
+    with (
+        patch(
+            "app.graph.nodes.response_composer.get_session",
+            side_effect=Exception("DB connection refused"),
+        ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     # Must return final_response without raising — user response is unaffected
     assert result["final_response"] is not None

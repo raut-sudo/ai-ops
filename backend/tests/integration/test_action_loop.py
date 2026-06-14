@@ -22,8 +22,8 @@ from sqlalchemy import text
 from app.db.models import IncidentAction
 from app.db.models import Session as SessionModel
 from app.db.session import get_session
-from app.graph.nodes.aggregator import aggregator_node
 from app.graph.nodes.reflection import _execute_approved_actions, _persist_proposed_actions
+from app.graph.nodes.response_composer import response_composer_node
 from app.schemas import (
     ActionProposal,
     ActionResult,
@@ -308,7 +308,7 @@ async def test_persist_proposed_actions_writes_incident_actions_row() -> None:
 
 @pytest.mark.asyncio
 async def test_aggregator_builds_final_response_from_synthesis() -> None:
-    """§8, §13.4: aggregator is pure and builds FinalResponse correctly."""
+    """§8, §13.4: response_composer_node builds FinalResponse correctly."""
     action_id = str(uuid.uuid4())
     thread_id = f"assemble-{uuid.uuid4()}"
     qty = 10
@@ -323,18 +323,22 @@ async def test_aggregator_builds_final_response_from_synthesis() -> None:
         )
     ]
 
-    # Patch Qdrant so no real embedding needed (aggregator does best-effort persist)
+    # Patch Qdrant and LLM so no real external calls are made
     with (
         patch(
-            "app.graph.nodes.aggregator.embed_text",
+            "app.graph.nodes.response_composer.embed_text",
             new=AsyncMock(return_value=[0.0] * 1536),
         ),
         patch(
-            "app.graph.nodes.aggregator.qdrant_upsert",
+            "app.graph.nodes.response_composer.qdrant_upsert",
             new=AsyncMock(return_value=None),
         ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout resolved."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     fr = result["final_response"]
 
@@ -352,7 +356,7 @@ async def test_aggregator_builds_final_response_from_synthesis() -> None:
 
 @pytest.mark.asyncio
 async def test_aggregator_persists_incident_to_postgres() -> None:
-    """§15.3: aggregator inserts an incidents row for diagnostic intents."""
+    """§15.3: response_composer_node inserts an incidents row for diagnostic intents."""
     session_id = f"persist-test-{uuid.uuid4()}"
 
     state = {
@@ -398,18 +402,22 @@ async def test_aggregator_persists_incident_to_postgres() -> None:
         "created_at": datetime.now(UTC),
     }
 
-    # Patch Qdrant so no real embedding needed
+    # Patch Qdrant and LLM so no real external calls are made
     with (
         patch(
-            "app.graph.nodes.aggregator.embed_text",
+            "app.graph.nodes.response_composer.embed_text",
             new=AsyncMock(return_value=[0.0] * 1536),
         ),
         patch(
-            "app.graph.nodes.aggregator.qdrant_upsert",
+            "app.graph.nodes.response_composer.qdrant_upsert",
             new=AsyncMock(return_value=None),
         ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout caused the drop."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     assert result["final_response"] is not None  # always returns a final_response
 
@@ -470,7 +478,11 @@ async def test_aggregator_skips_persist_for_memory_recall_intent() -> None:
         "created_at": datetime.now(UTC),
     }
 
-    result = await aggregator_node(state)
+    with patch(
+        "app.graph.nodes.response_composer._compose_summary",
+        new=AsyncMock(return_value="Past incidents found."),
+    ):
+        result = await response_composer_node(state)
     assert result["final_response"] is not None
 
     # Should NOT have written to DB (memory_recall is not a diagnostic intent)

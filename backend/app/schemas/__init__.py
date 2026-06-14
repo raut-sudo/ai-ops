@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,7 +37,7 @@ class MetricSnapshot(BaseModel):
     name: str
     value: float | int | str
     unit: str
-    period: str
+    period: str = "unknown"
     delta_pct: float | None = None
 
 
@@ -71,16 +71,16 @@ class RootCause(BaseModel):
     cause: str
     domain: str
     evidence: list[str]
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class SynthesisResult(BaseModel):
     correlated_explanation: str
-    root_causes: list[RootCause]
-    contributing_factors: dict[str, str]
-    confidence_score: float = Field(ge=0.0, le=1.0)
-    recommendations: list[str]
-    domains_correlated: list[str]
+    root_causes: list[RootCause] = Field(default_factory=list)
+    contributing_factors: dict[str, Any] = Field(default_factory=dict)
+    confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    recommendations: list[str] = Field(default_factory=list)
+    domains_correlated: list[str] = Field(default_factory=list)
 
 
 class ReflectionResult(BaseModel):

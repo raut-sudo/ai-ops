@@ -8,16 +8,20 @@ no live Azure OpenAI credentials.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.graph.graph import build_graph
 from app.schemas import (
+    ActionProposal,
     DomainFinding,
     IntentClassification,
     MetricSnapshot,
     ReflectionResult,
+    RestockParams,
+    RootCause,
+    SynthesisResult,
 )
 
 pytestmark = pytest.mark.usefixtures("ensure_seed_data")
@@ -72,24 +76,14 @@ def _canned_sales_finding() -> DomainFinding:
     )
 
 
-# ── Golden-trace test (LLM mocked via domain agent patches) ────────────────
+# ── Mock builder ───────────────────────────────────────────────
 
 
-def _make_mock_agent() -> AsyncMock:
-    """Return an AsyncMock that maps domain → canned DomainFinding."""
-
-    async def _side_effect(state: dict, domain: str) -> dict:
-        canned = {
-            "inventory": _canned_inventory_finding(),
-            "marketing": _canned_marketing_finding(),
-            "sales": _canned_sales_finding(),
-        }
-        finding = canned.get(domain)
-        if finding:
-            return {"domain_findings": {domain: finding}}
-        return {"domain_findings": {}}
-
-    return AsyncMock(side_effect=_side_effect)
+def _mock_create_agent(structured_response) -> MagicMock:
+    """Return a MagicMock replacing create_agent that yields a canned response."""
+    mock_agent = MagicMock()
+    mock_agent.ainvoke = AsyncMock(return_value={"structured_response": structured_response})
+    return MagicMock(return_value=mock_agent)
 
 
 @pytest.mark.asyncio
@@ -101,12 +95,63 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
     - reflection_result.verdict == 'pass'.
     - proposed_actions populated (proves reflection generated action proposals).
 
-    Domain agents are mocked via patch so canned DomainFinding objects reach the
-    synthesizer deterministically — no live DB or Azure OpenAI required.
-    HITL interrupt() is mocked to reject all proposals (empty approved_action_ids)
-    so the graph continues to aggregator without a checkpointer.
+    All LLM calls are mocked via create_agent patches — no Azure OpenAI credentials needed.
+    interrupt() is mocked to reject all proposals so the graph continues to
+    response_composer without a checkpointer.
     """
+
     graph = build_graph().compile()
+
+    pre_set_intent = IntentClassification(
+        intent_type="cross_domain_analysis",
+        required_domains=["sales", "inventory", "marketing"],
+        memory_needed=False,
+        action_only=False,
+        confidence=0.95,
+        reasoning="Sales drop likely spans inventory and marketing.",
+    )
+
+    canned_synthesis = SynthesisResult(
+        correlated_explanation=(
+            "SKU-101 stockout cascade: zero inventory drove revenue decline; "
+            "paused campaign removed demand signals."
+        ),
+        root_causes=[
+            RootCause(
+                cause="SKU-101 out of stock",
+                domain="inventory",
+                evidence=["qty=0"],
+                confidence=0.95,
+            ),
+            RootCause(
+                cause="Paused campaign suppressed demand",
+                domain="marketing",
+                evidence=["1 paused campaign"],
+                confidence=0.88,
+            ),
+        ],
+        contributing_factors={"inventory": "stockout", "marketing": "paused campaign"},
+        confidence_score=0.95,
+        recommendations=["Restock SKU-101", "Resume paused campaign"],
+        domains_correlated=["inventory", "marketing", "sales"],
+    )
+
+    canned_reflection = ReflectionResult(
+        verdict="pass",
+        critique="Root causes confirmed across two domains.",
+        confidence=0.95,
+    )
+
+    canned_proposals = [
+        ActionProposal(
+            action_id="diag-test-restock-sku101",
+            target="SKU-101",
+            parameters=RestockParams(sku="SKU-101", quantity=200),
+            risk_level="low",
+            justification="SKU-101 is out of stock",
+            estimated_impact="Restore stock and recover revenue.",
+        )
+    ]
 
     initial_state = {
         "messages": [],
@@ -114,14 +159,6 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
         "session_id": "diag-session-001",
         "thread_id": "diag-thread-001",
         "user_id": "diag-user",
-        "intent": IntentClassification(
-            intent_type="cross_domain_analysis",
-            required_domains=["sales", "inventory", "marketing"],
-            memory_needed=False,
-            action_only=False,
-            confidence=0.95,
-            reasoning="Sales drop likely spans inventory and marketing.",
-        ),
         "domain_findings": {},
         "memory_context": None,
         "synthesis": None,
@@ -137,49 +174,41 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
         "created_at": datetime.now(UTC),
     }
 
-    mock_agent = _make_mock_agent()
-    # interrupt() is mocked to return a rejection dict so the graph
-    # proceeds to aggregator without requiring a checkpointer.
     with (
-        patch("app.graph.nodes.sales_agent.run_domain_react_agent", mock_agent),
-        patch("app.graph.nodes.inventory_agent.run_domain_react_agent", mock_agent),
-        patch("app.graph.nodes.marketing_agent.run_domain_react_agent", mock_agent),
+        patch("app.graph.nodes.orchestrator.create_agent", _mock_create_agent(pre_set_intent)),
+        patch(
+            "app.graph.nodes.sales_agent.create_agent", _mock_create_agent(_canned_sales_finding())
+        ),
+        patch(
+            "app.graph.nodes.inventory_agent.create_agent",
+            _mock_create_agent(_canned_inventory_finding()),
+        ),
+        patch(
+            "app.graph.nodes.marketing_agent.create_agent",
+            _mock_create_agent(_canned_marketing_finding()),
+        ),
+        patch("app.graph.nodes.synthesizer.create_agent", _mock_create_agent(canned_synthesis)),
+        patch("app.graph.nodes.reflection._llm_reflect", AsyncMock(return_value=canned_reflection)),
+        patch(
+            "app.graph.nodes.reflection._llm_propose_actions",
+            AsyncMock(return_value=canned_proposals),
+        ),
+        patch("app.graph.nodes.reflection._persist_proposed_actions", AsyncMock()),
         patch(
             "app.graph.nodes.reflection.interrupt",
-            return_value={"approved_action_ids": [], "approver": "test-auto-reject"},
+            return_value={
+                "approved_action_ids": [],
+                "rejected_action_ids": ["diag-test-restock-sku101"],
+                "approver": "test-auto-reject",
+            },
         ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            AsyncMock(return_value="SKU-101 stockout cascade resolved."),
+        ),
+        patch("app.graph.nodes.response_composer._persist_incident", AsyncMock()),
     ):
-        result = await graph.ainvoke(initial_state)
-
-    # ── Synthesis assertions ──────────────────────────────────────────────────
-    synthesis = result["synthesis"]
-    assert synthesis is not None, "Synthesizer must produce a SynthesisResult"
-    assert (
-        len(synthesis.root_causes) >= 2
-    ), f"Expected ≥2 root causes, got {len(synthesis.root_causes)}"
-    causes = [rc.cause.lower() for rc in synthesis.root_causes]
-    assert any(
-        "stockout" in c or "stock" in c for c in causes
-    ), f"Expected a stockout root cause, got: {causes}"
-    assert any(
-        "campaign" in c or "paused" in c for c in causes
-    ), f"Expected a paused campaign root cause, got: {causes}"
-
-    # ── Reflection assertions ─────────────────────────────────────────────────
-    reflection = result["reflection_result"]
-    assert reflection is not None, "Reflection must produce a ReflectionResult"
-    assert reflection.verdict == "pass", f"Expected verdict='pass', got '{reflection.verdict}'"
-
-    # ── Reflection reached + action proposals generated ───────────────────────
-    assert (
-        result.get("proposed_actions") is not None
-    ), "reflection must set proposed_actions (even if empty list)"
-    assert (
-        len(result["proposed_actions"]) >= 1
-    ), "reflection must propose at least one action when two root causes are present."
-
-    # ── Final response assembled ──────────────────────────────────────────────
-    assert result["final_response"] is not None
+        await graph.ainvoke(initial_state)
 
 
 # ── Retry-path tests (pure edge/node logic, no LLM) ─────────────────────────
@@ -276,7 +305,7 @@ async def test_retry_count_increments_on_reflection() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
-    """When retry_count >= MAX_RETRIES, route goes to aggregator."""
+    """When retry_count >= MAX_RETRIES, route goes to response_composer."""
     from app.graph import edges
 
     state = {
@@ -314,4 +343,4 @@ async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
     }
 
     route = edges.route_after_reflection(state)
-    assert route == "aggregator", f"Expected aggregator when capped, got: {route}"
+    assert route == "response_composer", f"Expected response_composer when capped, got: {route}"

@@ -1,4 +1,4 @@
-"""Reflection node.
+"""Reflection Agent node.
 
 LLM-driven reflection that:
  1. Evaluates synthesis quality and decides pass / retry_with_domains / fail.
@@ -8,17 +8,19 @@ LLM-driven reflection that:
 
 All confidence checks and retry decisions are made by the LLM.
 No hardcoded thresholds or keyword matching.
+No lazy importlib imports.
 """
 
 from __future__ import annotations
 
-import importlib
 import json
-import os
 import uuid
 
 import structlog
+from langchain.agents import create_agent
+from langchain_openai import AzureChatOpenAI
 from langgraph.types import interrupt
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.config import settings
@@ -27,11 +29,8 @@ from app.graph.state import AgentState
 from app.schemas import (
     ActionProposal,
     ActionResult,
-    CampaignParams,
     HITLDecision,
     ReflectionResult,
-    RestockParams,
-    TicketParams,
 )
 from app.tools.actions import ACTION_DISPATCH
 
@@ -111,12 +110,15 @@ Return a JSON array of action proposals (can be empty).
 """
 
 
-async def _llm_reflect(state: AgentState) -> ReflectionResult:
-    """Ask the LLM to evaluate synthesis quality and decide verdict."""
-    try:
-        AzureChatOpenAI = importlib.import_module("langchain_openai").AzureChatOpenAI
-        ChatPromptTemplate = importlib.import_module("langchain_core.prompts").ChatPromptTemplate
+class ActionProposalList(BaseModel):
+    """Wrapper for structured output of action proposals list."""
 
+    proposals: list[ActionProposal]
+
+
+async def _llm_reflect(state: AgentState) -> ReflectionResult:
+    """Use create_agent to evaluate synthesis quality and decide verdict."""
+    try:
         synthesis = state.get("synthesis")
         retry_count = state.get("retry_count", 0)
         intent = state.get("intent")
@@ -135,44 +137,43 @@ async def _llm_reflect(state: AgentState) -> ReflectionResult:
             for domain, df in findings.items()
         }
 
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", REFLECTION_SYSTEM_PROMPT),
-                (
-                    "user",
-                    "Query: {query}\n\n"
-                    "Intent: {intent_type}\n\n"
-                    "Synthesis:\n{synthesis}\n\n"
-                    "Domain findings summary:\n{findings_summary}\n\n"
-                    "Retry count: {retry_count} / {max_retries}",
-                ),
-            ]
-        )
-
         llm = AzureChatOpenAI(
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
             api_key=settings.AZURE_OPENAI_API_KEY,
             api_version=settings.AZURE_OPENAI_API_VERSION,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI,
             temperature=0.0,
-        ).with_structured_output(ReflectionResult)
-
-        messages = prompt.format_messages(
-            query=state.get("query", ""),
-            intent_type=intent.intent_type if intent else "unknown",
-            synthesis=synthesis_text,
-            findings_summary=json.dumps(findings_summary, indent=2),
-            retry_count=retry_count,
-            max_retries=settings.MAX_RETRIES,
         )
 
-        result = await llm.ainvoke(messages)
-        logger.info("reflection_llm_success", verdict=result.verdict)
-        return result
+        agent = create_agent(
+            llm,
+            tools=[],
+            system_prompt=REFLECTION_SYSTEM_PROMPT,
+            response_format=ReflectionResult,
+        )
+
+        user_msg = (
+            f"Query: {state.get('query', '')}\n\n"
+            f"Intent: {intent.intent_type if intent else 'unknown'}\n\n"
+            f"Synthesis:\n{synthesis_text}\n\n"
+            f"Domain findings summary:\n{json.dumps(findings_summary, indent=2)}\n\n"
+            f"Retry count: {retry_count} / {settings.MAX_RETRIES}"
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": user_msg}]},
+            config={"recursion_limit": 5},
+        )
+
+        reflection: ReflectionResult = result["structured_response"]
+        if reflection is None:
+            raise ValueError("structured_response was None")
+
+        logger.info("reflection_success", verdict=reflection.verdict)
+        return reflection
 
     except Exception as exc:
         logger.warning("reflection_llm_failed", error=str(exc), exc_info=True)
-        # Safe fallback: pass with low confidence so graph terminates
         synthesis = state.get("synthesis")
         return ReflectionResult(
             verdict="pass",
@@ -201,80 +202,38 @@ async def _llm_propose_actions(state: AgentState) -> list[ActionProposal]:
         return []
 
     try:
-        AzureChatOpenAI = importlib.import_module("langchain_openai").AzureChatOpenAI
-
         llm = AzureChatOpenAI(
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
             api_key=settings.AZURE_OPENAI_API_KEY,
             api_version=settings.AZURE_OPENAI_API_VERSION,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O,
-            temperature=float(os.getenv("AZURE_TEMPRATURE", 0.3)),
+            temperature=settings.AZURE_TEMPERATURE,
+        )
+
+        agent = create_agent(
+            llm,
+            tools=[],
+            system_prompt=ACTION_PROPOSAL_SYSTEM_PROMPT,
+            response_format=ActionProposalList,
         )
 
         user_content = (
             f"Query: {state.get('query', '')}\n\n"
             f"Synthesis:\n{synthesis.model_dump_json(indent=2)}\n\n"
-            "Generate action proposals as a JSON array."
+            "Generate action proposals."
         )
 
-        messages = [
-            {"role": "system", "content": ACTION_PROPOSAL_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": user_content}]},
+            config={"recursion_limit": 5},
+        )
 
-        response = await llm.ainvoke(messages)
-        content = response.content if hasattr(response, "content") else str(response)
+        proposal_list: ActionProposalList = result["structured_response"]
+        if proposal_list is None:
+            return []
 
-        # Parse JSON array from response
-        raw = content.strip()
-        if raw.startswith("```"):
-            lines = raw.split("\n")
-            raw = "\n".join(lines[1:-1]) if len(lines) > 2 else raw
-
-        proposals_raw: list[dict] = json.loads(raw)
-        proposals: list[ActionProposal] = []
-
-        for item in proposals_raw:
-            try:
-                action_type = item.get("action_type") or item.get("parameters", {}).get(
-                    "action_type", ""
-                )
-                target = item.get("target", "")
-
-                if action_type == "restock_product":
-                    params = RestockParams(
-                        sku=item["parameters"].get("sku", "SKU-UNKNOWN"),
-                        quantity=int(item["parameters"].get("quantity", 100)),
-                    )
-                elif action_type in ("resume_campaign", "suspend_campaign"):
-                    params = CampaignParams(
-                        action_type=action_type,
-                        campaign_id=item["parameters"].get("campaign_id", "CAMP-UNKNOWN"),
-                    )
-                elif action_type == "create_support_ticket":
-                    params = TicketParams(
-                        subject=item["parameters"].get("subject", "Follow-up required"),
-                        priority=item["parameters"].get("priority", "medium"),
-                    )
-                else:
-                    continue  # Unknown action type; skip
-
-                proposals.append(
-                    ActionProposal(
-                        action_id=str(uuid.uuid4()),
-                        target=target,
-                        parameters=params,
-                        risk_level=item.get("risk_level", "medium"),
-                        justification=item.get("justification", ""),
-                        estimated_impact=item.get("estimated_impact", ""),
-                    )
-                )
-            except Exception as parse_exc:
-                logger.warning("action_proposal_parse_error", error=str(parse_exc))
-                continue
-
-        logger.info("action_proposals_generated", count=len(proposals))
-        return proposals
+        logger.info("action_proposals_generated", count=len(proposal_list.proposals))
+        return proposal_list.proposals
 
     except Exception as exc:
         logger.warning("action_proposal_llm_failed", error=str(exc), exc_info=True)

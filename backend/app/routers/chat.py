@@ -37,15 +37,15 @@ router = APIRouter(tags=["chat"])
 # Node names that trigger a node_start stream event.
 _GRAPH_NODES = frozenset(
     {
-        "intent_classifier",
+        "orchestrator",
         "sales_agent",
         "inventory_agent",
         "marketing_agent",
         "support_agent",
-        "memory_retrieve",
+        "memory_agent",
         "synthesizer",
         "reflection",
-        "aggregator",
+        "response_composer",
     }
 )
 
@@ -153,6 +153,19 @@ async def _event_generator(
                 actions_payload.append(d)
             else:
                 actions_payload.append(p)
+
+        # When interrupt() fires the reflection node never emits on_chain_end, so
+        # proposed_actions_snapshot may be empty.  Fall back to the interrupt payload
+        # that LangGraph checkpointed in snapshot.tasks[*].interrupts (§30.13 fix).
+        if not actions_payload:
+            for task in getattr(snapshot, "tasks", ()) or ():
+                for intr in getattr(task, "interrupts", ()) or ():
+                    intr_val = getattr(intr, "value", None)
+                    if isinstance(intr_val, dict) and "proposed_actions" in intr_val:
+                        actions_payload = intr_val["proposed_actions"]
+                        break
+                if actions_payload:
+                    break
 
         yield _ndjson(
             {

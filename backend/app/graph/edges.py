@@ -1,8 +1,8 @@
 """Routing edges for the LangGraph agent.
 
-Simplified to match the 6-node topology:
-  intent_classifier → domain agents (+ optional memory_retrieve) → synthesizer
-  → reflection → (retry fan-out OR aggregator)
+Simplified to match the 9-node topology:
+  orchestrator → domain agents (+ optional memory_retrieve) → synthesizer
+  → reflection → (retry fan-out OR response_composer)
 """
 
 from __future__ import annotations
@@ -68,25 +68,25 @@ def _fan_out(state: AgentState, domains: list[str] | None = None) -> list[Send]:
     return sends
 
 
-def route_after_intent(state: AgentState) -> str | list[Send]:
-    """Route after intent classification.
+def route_after_orchestrator(state: AgentState) -> str | list[Send]:
+    """Route after orchestrator classification.
 
     Cases:
-    - irrelevant → aggregator (skip investigation)
+    - irrelevant → response_composer (skip investigation)
     - memory_recall → memory_retrieve (skip domain agents)
     - others → fan_out (parallel domain investigation)
     """
     intent = state["intent"]
 
     if intent.intent_type == "irrelevant":
-        return "aggregator"
+        return "response_composer"
 
     if intent.intent_type == "memory_recall":
-        return "memory_retrieve"
+        return "memory_agent"
 
-    # No domains + no memory needed → aggregator (safe fallback)
+    # No domains + no memory needed → response_composer (safe fallback)
     if not intent.required_domains and not intent.memory_needed:
-        return "aggregator"
+        return "response_composer"
 
     return _fan_out(state)
 
@@ -95,16 +95,16 @@ def route_after_reflection(state: AgentState) -> str | list[Send]:
     """Route after reflection.
 
     - retry_with_domains → targeted fan_out (if retries remain)
-    - pass / fail → aggregator
+    - pass / fail → response_composer
     """
     result = state["reflection_result"]
     retry_count = state.get("retry_count", 0)
     intent = state.get("intent")
 
-    if result.verdict == "retry_with_domains" and retry_count <= MAX_RETRIES:
+    if result.verdict == "retry_with_domains" and retry_count < MAX_RETRIES:
         targets = result.domains_to_retry or (intent.required_domains if intent else [])
         if targets:
             return _fan_out(state, domains=targets)
 
-    # pass, fail, or exhausted retries → aggregator
-    return "aggregator"
+    # pass, fail, or exhausted retries → response_composer
+    return "response_composer"
