@@ -6,37 +6,45 @@ import json
 import re
 from typing import Any
 
+import structlog
+from langgraph.errors import GraphRecursionError
+
 from app.config import settings
 from app.schemas import DomainFinding, MetricSnapshot
 from app.tools.adapters import READ_TOOLS
-from app.tools.inventory import get_low_stock_products, get_stock_level
-from app.tools.marketing import get_campaign_performance
-from app.tools.sales import get_sales_metrics
-from app.tools.support import get_support_metrics
+from app.tools.inventory import analyze_inventory, get_stock_level
+from app.tools.marketing import analyze_marketing
+from app.tools.sales import analyze_sales
+from app.tools.support import analyze_support
+
+logger = structlog.get_logger(__name__)
 
 _DOMAIN_TOOL_NAMES: dict[str, set[str]] = {
     "sales": {
-        "get_sales_metrics",
-        "compare_sales_periods",
+        "analyze_sales",
         "get_top_products",
-        "get_sales_by_region",
+        "get_declining_products",
+        "get_sales_distribution",
     },
     "inventory": {
+        "analyze_inventory",
         "get_stock_level",
-        "get_low_stock_products",
-        "was_out_of_stock",
         "get_stockout_history",
+        "get_inventory_turnover",
+        "get_revenue_lost_to_stockouts",
     },
     "marketing": {
-        "get_campaign_performance",
+        "analyze_marketing",
         "get_underperforming_campaigns",
-        "get_active_campaigns_for_sku",
+        "get_campaigns_for_sku",
+        "get_unpromoted_top_products",
     },
     "support": {
-        "get_support_metrics",
-        "get_complaints_by_sku",
-        "get_refund_rate",
-        "get_ticket_trends",
+        "analyze_support",
+        "get_products_with_high_complaint_rate",
+        "get_common_complaint_categories",
+        "get_common_return_reasons",
+        "get_churn_risk_products",
     },
 }
 
@@ -74,9 +82,39 @@ async def _fallback(state: dict, domain: str) -> dict:
 
 async def _fallback_inner(state: dict, domain: str, query: str) -> dict:
     if domain == "sales":
-        metrics = await get_sales_metrics(period="yesterday")
+        result = await analyze_sales(period="yesterday", compare_previous=True)
         findings: list[str] = []
         anomalies: list[str] = []
+        metrics: list[MetricSnapshot] = [
+            MetricSnapshot(
+                name="revenue",
+                value=result["revenue"],
+                unit="USD",
+                period="yesterday",
+                delta_pct=result.get("revenue_delta_pct"),
+            ),
+            MetricSnapshot(
+                name="order_count",
+                value=result["order_count"],
+                unit="orders",
+                period="yesterday",
+                delta_pct=result.get("order_count_delta_pct"),
+            ),
+            MetricSnapshot(
+                name="average_order_value",
+                value=result["average_order_value"],
+                unit="USD",
+                period="yesterday",
+                delta_pct=result.get("aov_delta_pct"),
+            ),
+            MetricSnapshot(
+                name="units_sold",
+                value=result["units_sold"],
+                unit="units",
+                period="yesterday",
+                delta_pct=result.get("units_sold_delta_pct"),
+            ),
+        ]
         for m in metrics:
             if (
                 m.name in {"revenue", "order_count"}
@@ -98,7 +136,7 @@ async def _fallback_inner(state: dict, domain: str, query: str) -> dict:
                     metrics=metrics,
                     anomalies=anomalies,
                     confidence=confidence,
-                    tool_calls_made=["get_sales_metrics"],
+                    tool_calls_made=["analyze_sales"],
                     severity=severity,
                 )
             }
@@ -108,9 +146,10 @@ async def _fallback_inner(state: dict, domain: str, query: str) -> dict:
         sku_matches = re.findall(r"SKU[-_ ]?\d+", query.upper())
         sku = sku_matches[0].replace("_", "-").replace(" ", "-") if sku_matches else "SKU-101"
         stock = await get_stock_level(sku)
-        low = await get_low_stock_products()
+        inv_summary = await analyze_inventory()
         qty = int(stock.get("quantity_on_hand", 0)) if stock else 0
         reorder = int(stock.get("reorder_point", 0)) if stock else 0
+        low_count = int(inv_summary.get("low_stock_count", 0))
         findings = [f"{sku} quantity_on_hand={qty}, reorder_point={reorder}."]
         anomalies: list[str] = []
         severity = "low"
@@ -120,12 +159,12 @@ async def _fallback_inner(state: dict, domain: str, query: str) -> dict:
         elif stock and qty <= reorder:
             anomalies.append(f"{sku} is below reorder threshold.")
             severity = "high"
-        if low:
-            findings.append(f"{len(low)} SKU(s) flagged as low stock.")
+        if low_count:
+            findings.append(f"{low_count} SKU(s) flagged as low stock.")
         metrics = [
             MetricSnapshot(name="quantity_on_hand", value=qty, unit="units", period="now"),
             MetricSnapshot(name="reorder_point", value=reorder, unit="units", period="now"),
-            MetricSnapshot(name="low_stock_sku_count", value=len(low), unit="count", period="now"),
+            MetricSnapshot(name="low_stock_sku_count", value=low_count, unit="count", period="now"),
         ]
         return {
             "domain_findings": {
@@ -135,31 +174,48 @@ async def _fallback_inner(state: dict, domain: str, query: str) -> dict:
                     metrics=metrics,
                     anomalies=anomalies,
                     confidence=0.86 if anomalies else 0.68,
-                    tool_calls_made=["get_stock_level", "get_low_stock_products"],
+                    tool_calls_made=["get_stock_level", "analyze_inventory"],
                     severity=severity,
                 )
             }
         }
 
     if domain == "marketing":
-        campaigns = await get_campaign_performance(period="yesterday")
-        paused = [c for c in campaigns if c.get("status") == "paused"]
-        low_roas = [c for c in campaigns if float(c.get("roas", 0.0)) < 1.0]
+        summary = await analyze_marketing(period="yesterday")
+        paused_count = (
+            sum(1 for c in summary.get("campaigns", []) if c.get("status") == "paused")
+            if "campaigns" in summary
+            else 0
+        )
+        low_roas = summary.get("overall_roas", 1.0) < 1.0
         findings: list[str] = []
         anomalies: list[str] = []
-        if paused:
-            findings.append(f"{len(paused)} paused campaign(s) detected.")
+        if paused_count:
+            findings.append(f"{paused_count} paused campaign(s) detected.")
             anomalies.append("Paused campaign state may suppress demand.")
         if low_roas:
-            findings.append(f"{len(low_roas)} campaign(s) have ROAS below 1.0.")
+            findings.append(f"Overall ROAS is {summary.get('overall_roas', 0):.2f} (below 1.0).")
+            anomalies.append("Marketing spend is not recovering its cost.")
         if not findings:
             findings.append("No material campaign anomalies detected in fallback analysis.")
         metrics = [
             MetricSnapshot(
-                name="campaign_count", value=len(campaigns), unit="count", period="yesterday"
+                name="campaign_count",
+                value=summary.get("campaign_count", 0),
+                unit="count",
+                period="yesterday",
             ),
             MetricSnapshot(
-                name="paused_campaign_count", value=len(paused), unit="count", period="yesterday"
+                name="overall_roas",
+                value=summary.get("overall_roas", 0.0),
+                unit="ratio",
+                period="yesterday",
+            ),
+            MetricSnapshot(
+                name="total_spend",
+                value=summary.get("total_spend", 0.0),
+                unit="USD",
+                period="yesterday",
             ),
         ]
         return {
@@ -170,21 +226,51 @@ async def _fallback_inner(state: dict, domain: str, query: str) -> dict:
                     metrics=metrics,
                     anomalies=anomalies,
                     confidence=0.82 if anomalies else 0.62,
-                    tool_calls_made=["get_campaign_performance"],
+                    tool_calls_made=["analyze_marketing"],
                     severity="high" if anomalies else "low",
                 )
             }
         }
 
     if domain == "support":
-        metrics = await get_support_metrics(period="yesterday")
-        negatives = 0
-        for m in metrics:
-            if m.name == "negative_ticket_count":
-                negatives = int(m.value)
-                break
-        findings = [f"Negative ticket count yesterday: {negatives}."]
-        anomalies = ["Customer sentiment deterioration detected."] if negatives >= 5 else []
+        summary = await analyze_support(period="yesterday")
+        negatives = int(summary.get("negative_ticket_count", 0))
+        refund_rate = float(summary.get("refund_rate_pct", 0.0))
+        findings = [
+            f"Negative ticket count yesterday: {negatives}.",
+            f"Refund rate: {refund_rate:.1f}%.",
+        ]
+        anomalies = []
+        if negatives >= 5:
+            anomalies.append("Customer sentiment deterioration detected.")
+        if refund_rate >= 10.0:
+            anomalies.append("Refund rate is elevated (>=10%).")
+        metrics = [
+            MetricSnapshot(
+                name="ticket_count",
+                value=summary.get("ticket_count", 0),
+                unit="tickets",
+                period="yesterday",
+            ),
+            MetricSnapshot(
+                name="average_sentiment",
+                value=summary.get("average_sentiment", 0.0),
+                unit="score",
+                period="yesterday",
+            ),
+            MetricSnapshot(
+                name="negative_ticket_count",
+                value=negatives,
+                unit="tickets",
+                period="yesterday",
+            ),
+            MetricSnapshot(
+                name="refund_rate_pct",
+                value=refund_rate,
+                unit="percent",
+                period="yesterday",
+            ),
+        ]
         return {
             "domain_findings": {
                 domain: DomainFinding(
@@ -193,7 +279,7 @@ async def _fallback_inner(state: dict, domain: str, query: str) -> dict:
                     metrics=metrics,
                     anomalies=anomalies,
                     confidence=0.75 if anomalies else 0.6,
-                    tool_calls_made=["get_support_metrics"],
+                    tool_calls_made=["analyze_support"],
                     severity="high" if anomalies else "low",
                 )
             }
@@ -298,6 +384,8 @@ def _parse_domain_response(domain: str, raw: str) -> dict:
 
 
 async def run_domain_react_agent(state: dict, domain: str) -> dict:
+    import os
+
     if not settings.AZURE_OPENAI_API_KEY or not settings.AZURE_OPENAI_ENDPOINT:
         return await _fallback(state, domain)
 
@@ -310,7 +398,7 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
             api_key=settings.AZURE_OPENAI_API_KEY,
             api_version=settings.AZURE_OPENAI_API_VERSION,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O,
-            temperature=0,
+            temperature=float(os.getenv("AZURE_TEMPRATURE", 0.8)),
         )
         agent = create_react_agent(model=llm, tools=_domain_tools(domain))
 
@@ -326,9 +414,10 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
                         *prior_messages,
                         domain_prompt,
                     ]
-                }
+                },
+                config={"recursion_limit": 21},
             ),
-            timeout=8.0,
+            timeout=60.0,
         )
         messages = result.get("messages", [])
         last_text = ""
@@ -348,10 +437,10 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
 
         if not last_text.strip():
             return await _fallback(state, domain)
-        parsed = _parse_domain_response(domain, last_text)
-        finding = parsed["domain_findings"][domain]
-        if finding.tool_calls_made:
-            return parsed
+        return _parse_domain_response(domain, last_text)
+    except (TimeoutError, GraphRecursionError):
+        logger.warning("domain_agent_terminated", domain=domain, exc_info=True)
         return await _fallback(state, domain)
-    except Exception:
+    except Exception as exc:
+        logger.warning("domain_agent_error", domain=domain, error=str(exc), exc_info=True)
         return await _fallback(state, domain)

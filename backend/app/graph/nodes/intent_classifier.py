@@ -6,257 +6,320 @@ and local development functional without external model credentials.
 
 from __future__ import annotations
 
-import re
 from importlib import import_module
 
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 
 from app.config import settings
 from app.graph.state import AgentState
 from app.schemas import IntentClassification
 
 INTENT_SYSTEM_PROMPT = """
-You are an intent classification engine for an AI-powered E-Commerce Operations Brain.
+# Orchestrator Agent
 
-Classify the user's query and determine which business domains need investigation.
+## Role
 
-INTENT TYPES:
-- business_diagnosis
-- inventory_check
-- marketing_analysis
-- support_analysis
-- cross_domain_analysis
-- memory_recall
-- direct_action
-- reporting
-- irrelevant
+You are the high-level coordinator of an AI-powered E-Commerce Operations Brain.
 
-DOMAINS: sales, inventory, marketing, support
+Your responsibility is to understand the user's request and decide which specialized domain agents should investigate or act.
 
-Rules:
-- Use memory_needed=true for why/again/previous/before/recurrence/cross-domain queries.
-- action_only=true only for direct_action.
-- required_domains must only contain valid domains.
-- reasoning must be one sentence.
+You are a router only.
 
-Return JSON matching IntentClassification exactly.
+You do NOT perform business analysis.
+You do NOT solve the problem.
+You do NOT answer the question directly.
+You do NOT call domain tools.
+
+Your only job is to determine:
+
+* the intent type
+* which domain agents should be invoked
+* whether memory retrieval is required
+* whether the request is action-only
+
+---
+
+## Available Tools
+
+| Tool                       | Description                                             |
+| -------------------------- | ------------------------------------------------------- |
+| `recall_similar_incidents` | Retrieve historical incidents for routing context only. |
+| `get_related_policies`     | Retrieve operational policies relevant to the request.  |
+
+Never use these tools for performing analysis.
+
+---
+
+# Intent Types
+
+Choose exactly one:
+
+* business_diagnosis
+* inventory_check
+* marketing_analysis
+* support_analysis
+* cross_domain_analysis
+* memory_recall
+* direct_action
+* reporting
+* irrelevant
+
+---
+
+# Available Domain Agents
+
+You may select one or more of:
+
+### sales
+
+Handles:
+
+* revenue
+* orders
+* AOV
+* top products
+* declining products
+* sales trends
+* regional performance
+* channel analysis
+* anomaly detection
+
+---
+
+### inventory
+
+Handles:
+
+* stock levels
+* stockouts
+* turnover
+* lost revenue due to stockouts
+* replenishment
+* restocking
+
+---
+
+### marketing
+
+Handles:
+
+* campaign performance
+* ROAS
+* CTR
+* discount offers
+* campaign efficiency
+* paused campaigns
+* promotion effectiveness
+
+---
+
+### support
+
+Handles:
+
+* complaints
+* tickets
+* returns
+* refund behavior
+* customer sentiment
+* churn risk
+
+---
+
+## Routing Principles
+
+### Root Cause Questions
+
+Examples:
+
+* Why did sales drop?
+* Why is revenue decreasing?
+* Why are orders down?
+* What caused the decline?
+
+These require broad investigation.
+
+Intent:
+
+business_diagnosis
+
+Agents:
+
+sales
+inventory
+marketing
+support
+
+memory_needed = true
+
+---
+
+### Multi-domain Questions
+
+If several domains are involved, select all relevant domains.
+
+Intent:
+
+cross_domain_analysis
+
+memory_needed = true
+
+---
+
+### Inventory Questions
+
+Examples:
+
+* Check stock.
+* Is SKU-101 available?
+* Show stockouts.
+
+Intent:
+
+inventory_check
+
+---
+
+### Marketing Questions
+
+Examples:
+
+* Analyze campaign performance.
+* Which campaigns have low ROAS?
+
+Intent:
+
+marketing_analysis
+
+---
+
+### Support Questions
+
+Examples:
+
+* Complaint trends.
+* Return reasons.
+* Ticket sentiment.
+
+Intent:
+
+support_analysis
+
+---
+
+### Historical Questions
+
+Examples:
+
+* Have we seen this before?
+* What happened last time?
+* Similar incidents?
+* Previous outcome?
+
+Intent:
+
+memory_recall
+
+No domain agents are required.
+
+memory_needed = true
+
+---
+
+### Action Requests
+
+Examples:
+
+* Restock SKU-101.
+* Pause campaign X.
+* Create a support ticket.
+* Send an alert.
+
+Intent:
+
+direct_action
+
+Select only the minimum domains required.
+
+action_only = true
+
+---
+
+### Reporting Questions
+
+Examples:
+
+* Top products.
+* Revenue this month.
+* Inventory summary.
+* Campaign statistics.
+
+Intent:
+
+reporting
+
+Select only the relevant domains.
+
+memory_needed = false
+
+---
+
+### Irrelevant Queries
+
+Non-ecommerce questions and casual conversations.
+
+Intent:
+
+irrelevant
+
+No domain agents required.
+
+memory_needed = false
+
+action_only = false
+
+---
+
+# Important Rules
+
+* Never perform investigation.
+* Never answer the question.
+* Never hallucinate agents.
+* Select every domain that may contribute to the answer.
+* Root-cause problems should prefer broader investigation.
+* Historical and recurring situations should use memory retrieval.
+* Results from multiple agents will be synthesized elsewhere.
+* You are only responsible for routing.
+
+---
+
+# Output
+
+Return ONLY JSON matching IntentClassification.
+
+reasoning should contain a short explanation of why those agents were selected.
 """
 
 
-def _conversation_text(
-    query: str,
-    history: list[AnyMessage] | None = None,
-) -> str:
-    """Build a lightweight conversation context."""
-
-    parts: list[str] = []
-
-    if history:
-        # last few turns are enough
-        for msg in history[-8:]:
-            content = getattr(msg, "content", "")
-            if isinstance(content, str) and content.strip():
-                parts.append(content.lower())
-
-    parts.append(query.lower())
-
-    return "\n".join(parts)
-
-
-def _keyword_intent(
-    query: str,
-    history: list[AnyMessage] | None = None,
-) -> IntentClassification:
-    current_q = query.lower()
-    q = _conversation_text(query, history)
-
-    inventory_words = {"inventory", "stock", "stockout", "oos", "restock", "sku"}
-    marketing_words = {"campaign", "roas", "spend", "ads", "marketing"}
-    support_words = {"ticket", "complaint", "refund", "support", "return"}
-    sales_words = {"sales", "revenue", "orders", "aov", "units sold", "drop"}
-
-    has_inventory = any(w in q for w in inventory_words) or bool(re.search(r"sku[-_ ]?\d+", q))
-    has_marketing = any(w in q for w in marketing_words)
-    has_support = any(w in q for w in support_words)
-    has_sales = any(w in q for w in sales_words)
-
-    follow_up_tokens = {
-        "same",
-        "also",
-        "again",
-        "still",
-        "what about",
-        "how about",
-        "it",
-        "that",
-        "those",
-    }
-
-    is_follow_up = any(token in current_q for token in follow_up_tokens)
-
-    memory_needed = (
-        any(
-            token in q
-            for token in [
-                "why",
-                "again",
-                "still",
-                "keeps",
-                "before",
-                "previous",
-                "last time",
-            ]
-        )
-        or is_follow_up
-    )
-
-    # irrelevant uses only current turn
-    if any(w in current_q for w in ["weather", "movie", "football", "recipe", "politics"]):
-        return IntentClassification(
-            intent_type="irrelevant",
-            required_domains=[],
-            memory_needed=False,
-            action_only=False,
-            confidence=0.95,
-            reasoning="The query is unrelated to e-commerce operations.",
-        )
-
-    # memory recall
-    if any(
-        w in current_q
-        for w in [
-            "what happened last time",
-            "have we seen",
-            "past incident",
-            "previous incident",
-        ]
-    ):
-        return IntentClassification(
-            intent_type="memory_recall",
-            required_domains=[],
-            memory_needed=True,
-            action_only=False,
-            confidence=0.88,
-            reasoning="The user is requesting historical memory.",
-        )
-
-    # direct actions should only depend on the current turn
-    if any(
-        w in current_q
-        for w in [
-            "pause",
-            "activate",
-            "restock",
-            "apply discount",
-            "send alert",
-            "create ticket",
-        ]
-    ):
-        return IntentClassification(
-            intent_type="direct_action",
-            required_domains=[],
-            memory_needed=False,
-            action_only=True,
-            confidence=0.9,
-            reasoning="The user is requesting an operational action.",
-        )
-
-    domains: list[str] = []
-
-    if has_sales:
-        domains.append("sales")
-
-    if has_inventory:
-        domains.append("inventory")
-
-    if has_marketing:
-        domains.append("marketing")
-
-    if has_support:
-        domains.append("support")
-
-    if len(domains) > 1:
-        return IntentClassification(
-            intent_type="cross_domain_analysis",
-            required_domains=domains,
-            memory_needed=True,
-            action_only=False,
-            confidence=0.86,
-            reasoning="Multiple domains require correlation.",
-        )
-
-    if domains == ["inventory"]:
-        intent_type = "inventory_check"
-
-    elif domains == ["marketing"]:
-        intent_type = "marketing_analysis"
-
-    elif domains == ["support"]:
-        intent_type = "support_analysis"
-
-    elif domains == ["sales"]:
-        intent_type = "business_diagnosis" if ("why" in q or "drop" in q) else "reporting"
-
-    else:
-        intent_type = "business_diagnosis"
-        domains = ["sales", "inventory"]
-
-    return IntentClassification(
-        intent_type=intent_type,
-        required_domains=domains,
-        memory_needed=memory_needed
-        or intent_type
-        in {
-            "business_diagnosis",
-            "cross_domain_analysis",
-        },
-        action_only=False,
-        confidence=0.78,
-        reasoning="The query requires operational analysis.",
-    )
-
-
-async def _llm_classify(query: str, history: list) -> IntentClassification | None:
-    if not settings.AZURE_OPENAI_API_KEY or not settings.AZURE_OPENAI_ENDPOINT:
-        return None
-
-    try:
-        AzureChatOpenAI = import_module("langchain_openai").AzureChatOpenAI
-    except Exception:
-        return None
+async def intent_classifier_node(state: AgentState) -> dict:
+    AzureChatOpenAI = import_module("langchain_openai").AzureChatOpenAI
 
     llm = AzureChatOpenAI(
         azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
         api_key=settings.AZURE_OPENAI_API_KEY,
         api_version=settings.AZURE_OPENAI_API_VERSION,
         azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI,
-        temperature=0,
     ).with_structured_output(IntentClassification)
 
-    # System prompt + full conversation history gives the classifier context
-    # about what the user has been discussing, enabling accurate intent
-    # routing on follow-up turns (e.g. "do the same for inventory").
-    messages = [SystemMessage(content=INTENT_SYSTEM_PROMPT), *history]
+    messages = [
+        SystemMessage(content=INTENT_SYSTEM_PROMPT),
+        *state.get("messages", []),
+        state["query"],
+    ]
 
-    try:
-        return await llm.ainvoke(messages)
-    except Exception:
-        return None
-
-
-async def intent_classifier_node(state: AgentState) -> dict:
-    """Classify query intent and initialize retry_count."""
-    # existing_intent = state.get("intent")
-    # if existing_intent is not None:
-    #     return {"intent": existing_intent, "retry_count": 0}
-
-    query = state["query"]
-    history = state.get("messages", [])
-    result = await _llm_classify(query, history)
-    if result is None:
-        result = _keyword_intent(query=query, history=history)
+    intent = await llm.ainvoke(messages)
 
     return {
-        "intent": result,
+        "intent": intent,
         "retry_count": 0,
     }

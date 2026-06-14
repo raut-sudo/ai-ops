@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from app.db.models import IncidentAction, Session
 from app.db.session import get_session
-from app.graph.nodes.execute_actions import execute_actions_node
+from app.graph.nodes.reflection import _execute_approved_actions
 from app.schemas import ActionProposal, HITLDecision, RestockParams
 from app.tools.inventory import get_stock_level
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.usefixtures("ensure_seed_data")
 
 
 @pytest.mark.asyncio
-async def test_execute_actions_node_is_idempotent_for_same_action() -> None:
+async def test_execute_actions_is_idempotent_for_same_action() -> None:
     action_id = str(uuid.uuid4())
     thread_id = f"phase3-thread-{uuid.uuid4()}"
 
@@ -54,18 +54,20 @@ async def test_execute_actions_node_is_idempotent_for_same_action() -> None:
         )
         await session.commit()
 
+    decision = HITLDecision(
+        approved_action_ids=[action_id],
+        rejected_action_ids=[],
+        approver="tester",
+    )
     state = {
         "user_id": "phase3-test",
         "proposed_actions": [proposal],
-        "hitl_decision": HITLDecision(
-            approved_action_ids=[action_id],
-            rejected_action_ids=[],
-            approver="tester",
-        ),
+        "hitl_decision": decision,
     }
+    proposals = [proposal]
 
-    first = await execute_actions_node(state)
-    second = await execute_actions_node(state)
+    first = await _execute_approved_actions(proposals, decision, state)
+    second = await _execute_approved_actions(proposals, decision, state)
 
     after = await get_stock_level("SKU-101")
 
@@ -98,8 +100,8 @@ async def test_execute_actions_node_is_idempotent_for_same_action() -> None:
             .status
         )
 
-    assert first["action_results"][0].status == "executed"
-    assert second["action_results"][0].status == "skipped"
+    assert first[0].status == "executed"
+    assert second[0].status == "skipped"
     assert after["quantity_on_hand"] == before["quantity_on_hand"] + 5
     assert int(movement_count) == 1
     assert final_status == "executed"

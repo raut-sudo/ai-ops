@@ -117,23 +117,23 @@ async def test_chat_stream_terminates_with_hitl_pending_when_proposals_exist(cli
         estimated_impact="Restores 200 units.",
     )
 
-    # Snapshot shows graph is paused at hitl_node
+    # Snapshot shows graph is paused inside reflection (HITL via interrupt())
     mock_snapshot = MagicMock()
-    mock_snapshot.next = ("hitl_node",)  # _is_awaiting_hitl returns True
+    mock_snapshot.next = ("reflection",)  # _is_awaiting_hitl returns True
     mock_snapshot.values = {
         "final_response": None,
         "proposed_actions": [proposal],
     }
 
-    # Simulate action_agent completing and placing proposals in output
-    action_agent_event = {
+    # Simulate reflection completing with proposals in output
+    reflection_event = {
         "event": "on_chain_end",
-        "name": "action_agent",
+        "name": "reflection",
         "data": {"output": {"proposed_actions": [proposal]}},
     }
 
     mock_g = MagicMock()
-    mock_g.astream_events = MagicMock(return_value=_async_iter([action_agent_event]))
+    mock_g.astream_events = MagicMock(return_value=_async_iter([reflection_event]))
     mock_g.aget_state = AsyncMock(return_value=mock_snapshot)
 
     with (

@@ -12,47 +12,48 @@ from app.schemas import (
     TicketParams,
 )
 from app.tools.actions import (
-    activate_campaign,
-    apply_discount,
-    create_support_ticket,
-    pause_campaign,
-    restock_product,
-    send_alert,
+    create_discount_offer,
+    create_purchase_order,
+    notify_stakeholders,
+    open_customer_issue,
+    resume_campaign,
+    suspend_campaign,
 )
 from app.tools.inventory import (
-    get_low_stock_products,
+    analyze_inventory,
+    get_inventory_turnover,
+    get_revenue_lost_to_stockouts,
     get_stock_level,
     get_stockout_history,
-    was_out_of_stock,
 )
 from app.tools.marketing import (
-    get_active_campaigns_for_sku,
-    get_campaign_performance,
+    analyze_marketing,
+    get_campaigns_for_sku,
     get_underperforming_campaigns,
+    get_unpromoted_top_products,
 )
 from app.tools.sales import (
-    compare_sales_periods,
-    get_sales_by_region,
-    get_sales_metrics,
+    analyze_sales,
+    get_declining_products,
+    get_sales_distribution,
     get_top_products,
 )
 from app.tools.support import (
-    get_complaints_by_sku,
-    get_refund_rate,
-    get_support_metrics,
-    get_ticket_trends,
+    analyze_support,
+    get_churn_risk_products,
+    get_common_complaint_categories,
+    get_common_return_reasons,
+    get_products_with_high_complaint_rate,
 )
 
-
-class SalesMetricsArgs(BaseModel):
-    period: str = Field(description="Time window (yesterday, last_7_days, last_30_days)")
-    region: str | None = Field(default=None)
-    sku: str | None = Field(default=None)
+# ── Sales ──────────────────────────────────────────────────────────────────
 
 
-class CompareSalesArgs(BaseModel):
-    period_a: str
-    period_b: str
+class AnalyzeSalesArgs(BaseModel):
+    period: str = Field(description="Time window: yesterday, last_7_days, last_30_days")
+    region: str | None = Field(default=None, description="Filter by region")
+    sku: str | None = Field(default=None, description="Filter by SKU")
+    compare_previous: bool = Field(default=True, description="Include delta vs previous window")
 
 
 class TopProductsArgs(BaseModel):
@@ -60,17 +61,25 @@ class TopProductsArgs(BaseModel):
     limit: int = Field(default=10, ge=1, le=100)
 
 
-class RegionSalesArgs(BaseModel):
+class DecliningProductsArgs(BaseModel):
     period: str
+    limit: int = Field(default=10, ge=1, le=100)
+
+
+class SalesDistributionArgs(BaseModel):
+    period: str
+    group_by: str = Field(default="region", description="region or channel")
+
+
+# ── Inventory ─────────────────────────────────────────────────────────────
+
+
+class AnalyzeInventoryArgs(BaseModel):
+    pass
 
 
 class StockLevelArgs(BaseModel):
     sku: str
-
-
-class OutOfStockArgs(BaseModel):
-    sku: str
-    timestamp: str = Field(description="ISO timestamp")
 
 
 class StockoutHistoryArgs(BaseModel):
@@ -78,9 +87,19 @@ class StockoutHistoryArgs(BaseModel):
     period: str
 
 
-class CampaignPerformanceArgs(BaseModel):
+class InventoryTurnoverArgs(BaseModel):
     period: str
-    campaign_id: str | None = None
+
+
+class RevenueLostToStockoutsArgs(BaseModel):
+    period: str
+
+
+# ── Marketing ─────────────────────────────────────────────────────────────
+
+
+class AnalyzeMarketingArgs(BaseModel):
+    period: str
 
 
 class UnderperformingCampaignArgs(BaseModel):
@@ -88,298 +107,302 @@ class UnderperformingCampaignArgs(BaseModel):
     roas_threshold: float = 1.0
 
 
-class CampaignForSkuArgs(BaseModel):
+class CampaignsForSkuArgs(BaseModel):
     sku: str
 
 
-class SupportMetricsArgs(BaseModel):
+class UnpromotedTopProductsArgs(BaseModel):
+    period: str
+    limit: int = Field(default=10, ge=1, le=100)
+
+
+# ── Support ───────────────────────────────────────────────────────────────
+
+
+class AnalyzeSupportArgs(BaseModel):
     period: str
 
 
-class ComplaintsBySkuArgs(BaseModel):
-    sku: str
+class HighComplaintRateArgs(BaseModel):
+    period: str
+    min_complaints: int = Field(default=1, ge=1)
+
+
+class ComplaintCategoriesArgs(BaseModel):
     period: str
 
 
-class RefundRateArgs(BaseModel):
+class ReturnReasonsArgs(BaseModel):
     period: str
 
 
-class TicketTrendsArgs(BaseModel):
+class ChurnRiskProductsArgs(BaseModel):
     period: str
+    sentiment_threshold: float = Field(default=-0.2)
+    min_returns: int = Field(default=1, ge=0)
 
 
-class RestockActionArgs(BaseModel):
-    action_id: str
-    target: str
-    sku: str
-    quantity: int = Field(gt=0)
-    risk_level: str = "medium"
-    justification: str = "Auto-generated restock action"
-    estimated_impact: str = "Increase stock availability"
+# ── Action schemas ────────────────────────────────────────────────────────
 
 
-class PauseCampaignActionArgs(BaseModel):
-    action_id: str
-    target: str
-    campaign_id: str
-    risk_level: str = "medium"
-    justification: str = "Auto-generated pause campaign action"
-    estimated_impact: str = "Pause campaign to reduce spend"
+class CreatePurchaseOrderArgs(BaseModel):
+    sku: str = Field(description="SKU to restock")
+    quantity: int = Field(gt=0, description="Number of units to add to inventory")
 
 
-class ActivateCampaignActionArgs(BaseModel):
-    action_id: str
-    target: str
-    campaign_id: str
-    risk_level: str = "medium"
-    justification: str = "Auto-generated activate campaign action"
-    estimated_impact: str = "Activate campaign to increase reach"
+class SuspendCampaignArgs(BaseModel):
+    campaign_id: str = Field(description="ID of the campaign to suspend")
 
 
-class DiscountActionArgs(BaseModel):
-    action_id: str
-    target: str
-    sku: str
-    percent: float = Field(gt=0, le=90)
-    risk_level: str = "medium"
-    justification: str = "Auto-generated discount action"
-    estimated_impact: str = "Increase conversion"
+class ResumeCampaignArgs(BaseModel):
+    campaign_id: str = Field(description="ID of the campaign to resume")
 
 
-class TicketActionArgs(BaseModel):
-    action_id: str
-    target: str
-    subject: str
-    priority: str = Field(description="low, medium, high")
-    risk_level: str = "low"
-    justification: str = "Auto-generated support action"
-    estimated_impact: str = "Create support follow-up"
+class CreateDiscountOfferArgs(BaseModel):
+    sku: str = Field(description="SKU to discount")
+    percent: float = Field(gt=0, le=90, description="Discount percentage")
 
 
-class AlertActionArgs(BaseModel):
-    action_id: str
-    target: str
-    channel: str
-    message: str
-    risk_level: str = "low"
-    justification: str = "Auto-generated alert action"
-    estimated_impact: str = "Notify stakeholders"
+class OpenCustomerIssueArgs(BaseModel):
+    subject: str = Field(description="Short description of the issue")
+    priority: str = Field(description="Ticket priority: low, medium, or high")
 
 
-async def _adapter_was_out_of_stock(sku: str, timestamp: str) -> bool:
-    from datetime import datetime
+class NotifyStakeholdersArgs(BaseModel):
+    channel: str = Field(description="Notification channel (e.g. slack, email, pagerduty)")
+    message: str = Field(description="Alert message body")
 
-    return await was_out_of_stock(sku=sku, timestamp=datetime.fromisoformat(timestamp))
+
+# ── Action adapters ───────────────────────────────────────────────────────
 
 
-async def _adapter_restock_product(**kwargs):
+async def _adapter_create_purchase_order(sku: str, quantity: int):
     proposal = ActionProposal(
-        action_id=kwargs["action_id"],
-        target=kwargs["target"],
-        parameters=RestockParams(sku=kwargs["sku"], quantity=kwargs["quantity"]),
-        risk_level=kwargs["risk_level"],
-        justification=kwargs["justification"],
-        estimated_impact=kwargs["estimated_impact"],
+        target=sku,
+        parameters=RestockParams(sku=sku, quantity=quantity),
+        risk_level="medium",
+        justification="Increase inventory availability for the requested SKU.",
+        estimated_impact=f"Add {quantity} units to {sku} stock.",
     )
-    return await restock_product(proposal)
+    return await create_purchase_order(proposal)
 
 
-async def _adapter_pause_campaign(**kwargs):
+async def _adapter_suspend_campaign(campaign_id: str):
     proposal = ActionProposal(
-        action_id=kwargs["action_id"],
-        target=kwargs["target"],
+        target=campaign_id,
         parameters=CampaignParams(
-            action_type="pause_campaign",
-            campaign_id=kwargs["campaign_id"],
+            action_type="suspend_campaign",
+            campaign_id=campaign_id,
         ),
-        risk_level=kwargs["risk_level"],
-        justification=kwargs["justification"],
-        estimated_impact=kwargs["estimated_impact"],
+        risk_level="medium",
+        justification="Suspend underperforming campaign to control spend.",
+        estimated_impact="Stop spend and impressions for the campaign.",
     )
-    return await pause_campaign(proposal)
+    return await suspend_campaign(proposal)
 
 
-async def _adapter_activate_campaign(**kwargs):
+async def _adapter_resume_campaign(campaign_id: str):
     proposal = ActionProposal(
-        action_id=kwargs["action_id"],
-        target=kwargs["target"],
+        target=campaign_id,
         parameters=CampaignParams(
-            action_type="activate_campaign",
-            campaign_id=kwargs["campaign_id"],
+            action_type="resume_campaign",
+            campaign_id=campaign_id,
         ),
-        risk_level=kwargs["risk_level"],
-        justification=kwargs["justification"],
-        estimated_impact=kwargs["estimated_impact"],
+        risk_level="medium",
+        justification="Reactivate campaign to restore demand generation.",
+        estimated_impact="Resume reach and conversions for the campaign.",
     )
-    return await activate_campaign(proposal)
+    return await resume_campaign(proposal)
 
 
-async def _adapter_apply_discount(**kwargs):
+async def _adapter_create_discount_offer(sku: str, percent: float):
     proposal = ActionProposal(
-        action_id=kwargs["action_id"],
-        target=kwargs["target"],
-        parameters=DiscountParams(sku=kwargs["sku"], percent=kwargs["percent"]),
-        risk_level=kwargs["risk_level"],
-        justification=kwargs["justification"],
-        estimated_impact=kwargs["estimated_impact"],
+        target=sku,
+        parameters=DiscountParams(sku=sku, percent=percent),
+        risk_level="medium",
+        justification="Create a discount offer to improve conversion for the SKU.",
+        estimated_impact=f"Apply {percent}% discount to {sku}.",
     )
-    return await apply_discount(proposal)
+    return await create_discount_offer(proposal)
 
 
-async def _adapter_create_support_ticket(**kwargs):
+async def _adapter_open_customer_issue(subject: str, priority: str):
     proposal = ActionProposal(
-        action_id=kwargs["action_id"],
-        target=kwargs["target"],
-        parameters=TicketParams(subject=kwargs["subject"], priority=kwargs["priority"]),
-        risk_level=kwargs["risk_level"],
-        justification=kwargs["justification"],
-        estimated_impact=kwargs["estimated_impact"],
+        target="support",
+        parameters=TicketParams(subject=subject, priority=priority),
+        risk_level="low",
+        justification="Open a customer issue for follow-up.",
+        estimated_impact="Create a support ticket for resolution.",
     )
-    return await create_support_ticket(proposal)
+    return await open_customer_issue(proposal)
 
 
-async def _adapter_send_alert(**kwargs):
+async def _adapter_notify_stakeholders(channel: str, message: str):
     proposal = ActionProposal(
-        action_id=kwargs["action_id"],
-        target=kwargs["target"],
-        parameters=AlertParams(channel=kwargs["channel"], message=kwargs["message"]),
-        risk_level=kwargs["risk_level"],
-        justification=kwargs["justification"],
-        estimated_impact=kwargs["estimated_impact"],
+        target=channel,
+        parameters=AlertParams(channel=channel, message=message),
+        risk_level="low",
+        justification="Notify stakeholders of an operational event.",
+        estimated_impact="Deliver alert to the specified channel.",
     )
-    return await send_alert(proposal)
+    return await notify_stakeholders(proposal)
+
+
+# ── Tool lists ────────────────────────────────────────────────────────────
 
 
 READ_TOOLS = [
+    # Sales
     StructuredTool.from_function(
-        coroutine=get_sales_metrics,
-        name="get_sales_metrics",
-        description="Aggregate revenue, order count, AOV, and units sold for a period.",
-        args_schema=SalesMetricsArgs,
-    ),
-    StructuredTool.from_function(
-        coroutine=compare_sales_periods,
-        name="compare_sales_periods",
-        description="Compare sales metrics between two semantic periods.",
-        args_schema=CompareSalesArgs,
+        coroutine=analyze_sales,
+        name="analyze_sales",
+        description="Return revenue, order count, AOV, units sold, and period-over-period deltas. Optionally filter by region or SKU.",
+        args_schema=AnalyzeSalesArgs,
     ),
     StructuredTool.from_function(
         coroutine=get_top_products,
         name="get_top_products",
-        description="Get top-selling products for a period.",
+        description="Get top-selling products ranked by units sold for a period.",
         args_schema=TopProductsArgs,
     ),
     StructuredTool.from_function(
-        coroutine=get_sales_by_region,
-        name="get_sales_by_region",
-        description="Get sales metrics grouped by region for a period.",
-        args_schema=RegionSalesArgs,
+        coroutine=get_declining_products,
+        name="get_declining_products",
+        description="Find products whose revenue or units declined versus the previous window.",
+        args_schema=DecliningProductsArgs,
+    ),
+    StructuredTool.from_function(
+        coroutine=get_sales_distribution,
+        name="get_sales_distribution",
+        description="Break down order count and revenue by region or channel.",
+        args_schema=SalesDistributionArgs,
+    ),
+    # Inventory
+    StructuredTool.from_function(
+        coroutine=analyze_inventory,
+        name="analyze_inventory",
+        description="Snapshot of total inventory value, low-stock count, stockout count, and the list of low-stock products.",
+        args_schema=AnalyzeInventoryArgs,
     ),
     StructuredTool.from_function(
         coroutine=get_stock_level,
         name="get_stock_level",
-        description="Get inventory snapshot for a SKU.",
+        description="Get current inventory snapshot for a single SKU.",
         args_schema=StockLevelArgs,
-    ),
-    StructuredTool.from_function(
-        coroutine=get_low_stock_products,
-        name="get_low_stock_products",
-        description="List products at/below reorder point.",
-    ),
-    StructuredTool.from_function(
-        coroutine=_adapter_was_out_of_stock,
-        name="was_out_of_stock",
-        description="Check whether a SKU was out of stock at a specific timestamp.",
-        args_schema=OutOfStockArgs,
     ),
     StructuredTool.from_function(
         coroutine=get_stockout_history,
         name="get_stockout_history",
-        description="Return stockout events for a SKU over a period.",
+        description="Return movement events where a SKU hit zero stock within a period.",
         args_schema=StockoutHistoryArgs,
     ),
     StructuredTool.from_function(
-        coroutine=get_campaign_performance,
-        name="get_campaign_performance",
-        description="Summarize campaign performance and ROAS for a period.",
-        args_schema=CampaignPerformanceArgs,
+        coroutine=get_inventory_turnover,
+        name="get_inventory_turnover",
+        description="Compute units sold vs quantity on hand (turnover ratio) per SKU for a period.",
+        args_schema=InventoryTurnoverArgs,
+    ),
+    StructuredTool.from_function(
+        coroutine=get_revenue_lost_to_stockouts,
+        name="get_revenue_lost_to_stockouts",
+        description="Estimate revenue lost per SKU due to stockout events in a period.",
+        args_schema=RevenueLostToStockoutsArgs,
+    ),
+    # Marketing
+    StructuredTool.from_function(
+        coroutine=analyze_marketing,
+        name="analyze_marketing",
+        description="Aggregate campaign spend, revenue, impressions, clicks, conversions, ROAS, and CTR for a period.",
+        args_schema=AnalyzeMarketingArgs,
     ),
     StructuredTool.from_function(
         coroutine=get_underperforming_campaigns,
         name="get_underperforming_campaigns",
-        description="List campaigns with ROAS below threshold.",
+        description="List campaigns whose ROAS is below a threshold.",
         args_schema=UnderperformingCampaignArgs,
     ),
     StructuredTool.from_function(
-        coroutine=get_active_campaigns_for_sku,
-        name="get_active_campaigns_for_sku",
-        description="Find active/paused campaigns targeting a SKU.",
-        args_schema=CampaignForSkuArgs,
+        coroutine=get_campaigns_for_sku,
+        name="get_campaigns_for_sku",
+        description="Find active and paused campaigns targeting a SKU.",
+        args_schema=CampaignsForSkuArgs,
     ),
     StructuredTool.from_function(
-        coroutine=get_support_metrics,
-        name="get_support_metrics",
-        description="Get ticket volume and sentiment metrics for a period.",
-        args_schema=SupportMetricsArgs,
+        coroutine=get_unpromoted_top_products,
+        name="get_unpromoted_top_products",
+        description="Find high-revenue products that have no active or paused campaign.",
+        args_schema=UnpromotedTopProductsArgs,
+    ),
+    # Support
+    StructuredTool.from_function(
+        coroutine=analyze_support,
+        name="analyze_support",
+        description="Combined support health: ticket count, sentiment, negative tickets, and refund rate.",
+        args_schema=AnalyzeSupportArgs,
     ),
     StructuredTool.from_function(
-        coroutine=get_complaints_by_sku,
-        name="get_complaints_by_sku",
-        description="Get negative-sentiment complaints for a SKU in a period.",
-        args_schema=ComplaintsBySkuArgs,
+        coroutine=get_products_with_high_complaint_rate,
+        name="get_products_with_high_complaint_rate",
+        description="List products with elevated complaint counts and complaint rate per unit sold.",
+        args_schema=HighComplaintRateArgs,
     ),
     StructuredTool.from_function(
-        coroutine=get_refund_rate,
-        name="get_refund_rate",
-        description="Compute refund rate for a period.",
-        args_schema=RefundRateArgs,
+        coroutine=get_common_complaint_categories,
+        name="get_common_complaint_categories",
+        description="Group support tickets by category showing volume and negative ratio.",
+        args_schema=ComplaintCategoriesArgs,
     ),
     StructuredTool.from_function(
-        coroutine=get_ticket_trends,
-        name="get_ticket_trends",
-        description="Summarize support trends by category.",
-        args_schema=TicketTrendsArgs,
+        coroutine=get_common_return_reasons,
+        name="get_common_return_reasons",
+        description="Rank return reasons by frequency and total refund amount.",
+        args_schema=ReturnReasonsArgs,
+    ),
+    StructuredTool.from_function(
+        coroutine=get_churn_risk_products,
+        name="get_churn_risk_products",
+        description="Find products at churn risk due to poor sentiment or high return counts.",
+        args_schema=ChurnRiskProductsArgs,
     ),
 ]
 
 
 ACTION_TOOLS = [
     StructuredTool.from_function(
-        coroutine=_adapter_restock_product,
-        name="restock_product",
-        description="Restock a SKU and write an inventory movement entry.",
-        args_schema=RestockActionArgs,
+        coroutine=_adapter_create_purchase_order,
+        name="create_purchase_order",
+        description="Increase inventory availability for a SKU by adding stock.",
+        args_schema=CreatePurchaseOrderArgs,
     ),
     StructuredTool.from_function(
-        coroutine=_adapter_pause_campaign,
-        name="pause_campaign",
-        description="Pause a campaign to reduce spend and impressions.",
-        args_schema=PauseCampaignActionArgs,
+        coroutine=_adapter_suspend_campaign,
+        name="suspend_campaign",
+        description="Suspend an active campaign to stop spend and impressions.",
+        args_schema=SuspendCampaignArgs,
     ),
     StructuredTool.from_function(
-        coroutine=_adapter_activate_campaign,
-        name="activate_campaign",
-        description="Activate a campaign to increase reach and conversions.",
-        args_schema=ActivateCampaignActionArgs,
+        coroutine=_adapter_resume_campaign,
+        name="resume_campaign",
+        description="Resume a suspended campaign to restore reach and conversions.",
+        args_schema=ResumeCampaignArgs,
     ),
     StructuredTool.from_function(
-        coroutine=_adapter_apply_discount,
-        name="apply_discount",
-        description="Create an auto campaign discount for a SKU.",
-        args_schema=DiscountActionArgs,
+        coroutine=_adapter_create_discount_offer,
+        name="create_discount_offer",
+        description="Create a percentage discount offer for a SKU to improve conversion.",
+        args_schema=CreateDiscountOfferArgs,
     ),
     StructuredTool.from_function(
-        coroutine=_adapter_create_support_ticket,
-        name="create_support_ticket",
-        description="Create a support ticket.",
-        args_schema=TicketActionArgs,
+        coroutine=_adapter_open_customer_issue,
+        name="open_customer_issue",
+        description="Open a support ticket to track and resolve a customer or product issue.",
+        args_schema=OpenCustomerIssueArgs,
     ),
     StructuredTool.from_function(
-        coroutine=_adapter_send_alert,
-        name="send_alert",
-        description="Emit an alert event into audit logs.",
-        args_schema=AlertActionArgs,
+        coroutine=_adapter_notify_stakeholders,
+        name="notify_stakeholders",
+        description="Send an alert to stakeholders via a specified channel and record it.",
+        args_schema=NotifyStakeholdersArgs,
     ),
 ]
 

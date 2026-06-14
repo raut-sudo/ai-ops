@@ -34,5 +34,4 @@ docs/
 *.md
 
 # Docker meta
-infra/docker-compose*.yml
-infra/Dockerfile*
+docker-compose*.yml

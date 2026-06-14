@@ -13,14 +13,9 @@ def test_graph_nodes_match_blueprint_topology() -> None:
         "marketing_agent",
         "support_agent",
         "memory_retrieve",
-        "join_findings",
         "synthesizer",
         "reflection",
-        "action_agent",
-        "hitl_node",
-        "execute_actions",
-        "assemble_response",
-        "persist_incident",
+        "aggregator",
     }
 
     assert set(graph.nodes.keys()) == expected_nodes
@@ -31,16 +26,13 @@ def test_graph_unconditional_edges_match_blueprint() -> None:
 
     expected_edges = {
         ("__start__", "intent_classifier"),
-        ("sales_agent", "join_findings"),
-        ("inventory_agent", "join_findings"),
-        ("marketing_agent", "join_findings"),
-        ("support_agent", "join_findings"),
-        ("memory_retrieve", "join_findings"),
-        ("join_findings", "synthesizer"),
+        ("sales_agent", "synthesizer"),
+        ("inventory_agent", "synthesizer"),
+        ("marketing_agent", "synthesizer"),
+        ("support_agent", "synthesizer"),
+        ("memory_retrieve", "synthesizer"),
         ("synthesizer", "reflection"),
-        ("execute_actions", "assemble_response"),
-        ("assemble_response", "persist_incident"),
-        ("persist_incident", "__end__"),
+        ("aggregator", "__end__"),
     }
 
     assert graph.edges == expected_edges
@@ -52,8 +44,6 @@ def test_graph_conditional_branches_match_blueprint() -> None:
     expected_branch_nodes = {
         "intent_classifier": "route_after_intent",
         "reflection": "route_after_reflection",
-        "action_agent": "route_after_action_agent",
-        "hitl_node": "route_after_hitl",
     }
 
     assert set(graph.branches.keys()) == set(expected_branch_nodes.keys())

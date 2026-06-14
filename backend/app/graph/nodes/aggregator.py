@@ -1,10 +1,11 @@
-"""Persist incident node — gated, best-effort write to Layer 3.
+"""Aggregator node — terminal node.
 
-Blueprint §15.3, §30.6 requirements:
-- Gate: only persists for diagnostic intents with root causes (FR-15).
-- Best-effort: Qdrant or Postgres failure MUST NOT fail the user response (NFR-12).
-- Separate from assemble_response so assemble is always pure (no I/O).
-- Failures logged to audit_logs (never raise).
+Combines:
+- Final response assembly (was assemble_response.py)
+- Incident persistence to Postgres + Qdrant (was persist_incident.py)
+
+This is the only exit point to END. It never raises — failures are logged
+but must never block the user-facing response (NFR-12).
 """
 
 from __future__ import annotations
@@ -16,9 +17,11 @@ from sqlalchemy import text
 
 from app.db.session import get_session
 from app.embeddings import embed_text
+from app.graph.state import AgentState
+from app.schemas import FinalResponse
 from app.vector import qdrant_upsert
 
-log = logging.getLogger("persist_incident")
+log = logging.getLogger("aggregator")
 
 _DIAGNOSTIC_INTENTS = {
     "business_diagnosis",
@@ -29,19 +32,19 @@ _DIAGNOSTIC_INTENTS = {
 }
 
 
-async def persist_incident_node(state: dict) -> dict:
+async def _persist_incident(state: AgentState) -> None:
     """Best-effort write of resolved diagnosis to Postgres incidents + Qdrant.
 
-    Returns {} always — failure must never propagate (NFR-12).
+    Gated on diagnostic intent with root causes (FR-15).
+    Never raises — failure is logged only.
     """
     intent = state.get("intent")
     synth = state.get("synthesis")
 
-    # ── GATE (FR-15): only real diagnoses with root causes ──
     if intent is None or intent.intent_type not in _DIAGNOSTIC_INTENTS:
-        return {}
+        return
     if not (synth and synth.root_causes):
-        return {}
+        return
 
     incident_id = state.get("session_id", str(uuid.uuid4()))
     summary = synth.correlated_explanation
@@ -54,7 +57,6 @@ async def persist_incident_node(state: dict) -> dict:
     )
 
     try:
-        # ── Postgres write ──
         async with get_session() as session:
             await session.execute(
                 text("""
@@ -76,8 +78,6 @@ async def persist_incident_node(state: dict) -> dict:
             )
             await session.commit()
 
-        # ── Qdrant write (separate try so Postgres write is not lost) ──
-        # Use deterministic UUID5 from incident_id so Qdrant gets a valid UUID.
         qdrant_point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, incident_id))
         try:
             vector = await embed_text(summary)
@@ -86,7 +86,6 @@ async def persist_incident_node(state: dict) -> dict:
                 vector=vector,
                 payload={"incident_id": incident_id, "summary": summary},
             )
-            # Mark embedded = True in Postgres
             async with get_session() as session:
                 await session.execute(
                     text("UPDATE incidents SET embedded = TRUE WHERE id = :id"),
@@ -94,11 +93,10 @@ async def persist_incident_node(state: dict) -> dict:
                 )
                 await session.commit()
         except Exception as qdrant_exc:
-            log.warning("persist_incident Qdrant upsert failed (non-fatal): %s", qdrant_exc)
+            log.warning("aggregator Qdrant upsert failed (non-fatal): %s", qdrant_exc)
 
     except Exception as exc:
-        # NFR-12: never fail the user-facing response
-        log.warning("persist_incident failed (non-fatal): %s", exc)
+        log.warning("aggregator persist_incident failed (non-fatal): %s", exc)
         try:
             async with get_session() as session:
                 await session.execute(
@@ -115,4 +113,65 @@ async def persist_incident_node(state: dict) -> dict:
         except Exception:
             pass
 
-    return {}
+
+async def aggregator_node(state: AgentState) -> dict:
+    """Build FinalResponse and best-effort persist incident. Terminal node."""
+    synthesis = state.get("synthesis")
+    intent = state.get("intent")
+    action_results = state.get("action_results") or []
+    proposed_actions = state.get("proposed_actions") or []
+
+    # Confidence: prefer synthesis score, fall back to reflection
+    confidence: float = 0.0
+    if synthesis:
+        confidence = synthesis.confidence_score
+    elif state.get("reflection_result"):
+        confidence = state["reflection_result"].confidence  # type: ignore[union-attr]
+
+    # Status
+    if state.get("error"):
+        status = "error"
+    elif intent and intent.intent_type == "irrelevant":
+        status = "irrelevant"
+    elif confidence < 0.5:
+        status = "low_confidence"
+    else:
+        status = "success"
+
+    # Summary
+    if synthesis:
+        summary = synthesis.correlated_explanation
+    elif intent and intent.intent_type == "irrelevant":
+        summary = "Query is not relevant to e-commerce operations."
+    elif intent and intent.intent_type == "memory_recall":
+        mc = state.get("memory_context")
+        if mc and mc.past_incidents:
+            summary = f"Found {len(mc.past_incidents)} relevant past incident(s)."
+        else:
+            summary = "No relevant past incidents found."
+    else:
+        summary = "Investigation completed with limited findings."
+
+    final_response = FinalResponse(
+        session_id=state["session_id"],
+        query=state["query"],
+        intent_type=intent.intent_type if intent else "unknown",
+        status=status,
+        summary=summary,
+        root_causes=synthesis.root_causes if synthesis else [],
+        domain_findings=state.get("domain_findings") or {},
+        memory_context=state.get("memory_context"),
+        recommendations=synthesis.recommendations if synthesis else [],
+        proposed_actions=proposed_actions,
+        executed_actions=action_results,
+        confidence_score=confidence,
+        low_confidence_flag=confidence < 0.5,
+        thread_id=state["thread_id"],
+        otel_trace_id=state.get("otel_trace_id", ""),
+        langsmith_run_id=state.get("langsmith_run_id"),
+    )
+
+    # Best-effort persistence (never raises)
+    await _persist_incident(state)
+
+    return {"final_response": final_response}

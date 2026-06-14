@@ -11,11 +11,11 @@ from .base import resolve_period, tool_retry
 def _derive_rates(impressions: int, clicks: int, spend: float, attributed_revenue: float) -> dict:
     ctr = (clicks / impressions * 100.0) if impressions > 0 else 0.0
     roas = (attributed_revenue / spend) if spend > 0 else 0.0
-    conversion_rate = (attributed_revenue / clicks) if clicks > 0 else 0.0
+    revenue_per_click = (attributed_revenue / clicks) if clicks > 0 else 0.0
     return {
         "ctr_pct": ctr,
         "roas": roas,
-        "revenue_per_click": conversion_rate,
+        "revenue_per_click": revenue_per_click,
     }
 
 
@@ -83,12 +83,35 @@ async def _get_campaign_performance_impl(
     return results
 
 
-async def get_campaign_performance(
-    period: str,
-    campaign_id: str | None = None,
-) -> list[dict]:
+@tool_retry
+async def _analyze_marketing_impl(session: AsyncSession, period: str) -> dict:
+    campaigns = await _get_campaign_performance_impl(session, period)
+
+    total_spend = sum(c["spend"] for c in campaigns)
+    total_revenue = sum(c["attributed_revenue"] for c in campaigns)
+    total_impressions = sum(c["impressions"] for c in campaigns)
+    total_clicks = sum(c["clicks"] for c in campaigns)
+    total_conversions = sum(c["conversions"] for c in campaigns)
+
+    rates = _derive_rates(total_impressions, total_clicks, total_spend, total_revenue)
+
+    return {
+        "period": period,
+        "campaign_count": len(campaigns),
+        "total_spend": total_spend,
+        "total_attributed_revenue": total_revenue,
+        "total_impressions": total_impressions,
+        "total_clicks": total_clicks,
+        "total_conversions": total_conversions,
+        "overall_roas": rates["roas"],
+        "overall_ctr_pct": rates["ctr_pct"],
+        "overall_revenue_per_click": rates["revenue_per_click"],
+    }
+
+
+async def analyze_marketing(period: str) -> dict:
     async with get_session() as session:
-        return await _get_campaign_performance_impl(session, period, campaign_id=campaign_id)
+        return await _analyze_marketing_impl(session, period)
 
 
 @tool_retry
@@ -111,7 +134,7 @@ async def get_underperforming_campaigns(period: str, roas_threshold: float = 1.0
 
 
 @tool_retry
-async def _get_active_campaigns_for_sku_impl(session: AsyncSession, sku: str) -> list[dict]:
+async def _get_campaigns_for_sku_impl(session: AsyncSession, sku: str) -> list[dict]:
     sql = text(
         """
         SELECT id, name, status, channel, paused_at, started_at, ends_at, discount_percent
@@ -140,6 +163,53 @@ async def _get_active_campaigns_for_sku_impl(session: AsyncSession, sku: str) ->
     ]
 
 
-async def get_active_campaigns_for_sku(sku: str) -> list[dict]:
+async def get_campaigns_for_sku(sku: str) -> list[dict]:
     async with get_session() as session:
-        return await _get_active_campaigns_for_sku_impl(session, sku)
+        return await _get_campaigns_for_sku_impl(session, sku)
+
+
+@tool_retry
+async def _get_unpromoted_top_products_impl(
+    session: AsyncSession, period: str, limit: int = 10
+) -> list[dict]:
+    start, end = resolve_period(period)
+
+    sql = text(
+        """
+        SELECT
+            oi.sku,
+            p.name,
+            COALESCE(SUM(oi.quantity), 0)   AS units_sold,
+            COALESCE(SUM(oi.line_total), 0) AS revenue
+        FROM order_items oi
+        JOIN orders o  ON o.id  = oi.order_id
+        JOIN products p ON p.sku = oi.sku
+        WHERE o.placed_at >= :start
+          AND o.placed_at <  :end
+          AND o.status NOT IN ('cancelled')
+          AND NOT EXISTS (
+              SELECT 1 FROM campaigns c
+              WHERE oi.sku = ANY(c.target_skus)
+                AND c.status IN ('active', 'paused')
+          )
+        GROUP BY oi.sku, p.name
+        ORDER BY revenue DESC
+        LIMIT :limit
+        """
+    )
+    rows = (await session.execute(sql, {"start": start, "end": end, "limit": limit})).all()
+
+    return [
+        {
+            "sku": row.sku,
+            "name": row.name,
+            "units_sold": int(row.units_sold),
+            "revenue": float(row.revenue),
+        }
+        for row in rows
+    ]
+
+
+async def get_unpromoted_top_products(period: str, limit: int = 10) -> list[dict]:
+    async with get_session() as session:
+        return await _get_unpromoted_top_products_impl(session, period, limit=limit)

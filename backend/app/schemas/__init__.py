@@ -104,7 +104,7 @@ class DiscountParams(BaseModel):
 
 
 class CampaignParams(BaseModel):
-    action_type: Literal["pause_campaign", "activate_campaign"]
+    action_type: Literal["suspend_campaign", "resume_campaign"]
     campaign_id: str
 
 

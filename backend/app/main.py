@@ -15,6 +15,7 @@ Shutdown order:
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -29,6 +30,17 @@ from app.core.middleware import AuthMiddleware, CorrelationIDMiddleware
 from app.graph.runtime import compile_graph_singleton, setup_checkpointer, shutdown_checkpointer
 from app.observability.tracer import setup_tracing, shutdown_tracing
 from app.routers.health import router as health_router
+
+# Suppress Pydantic v2 serialization warning from OpenAI's
+# ParsedChatCompletionMessage.parsed generic TypeVar not resolving
+# correctly during model_dump(). The warning is harmless — values
+# are still serialized — but very noisy in logs.
+warnings.filterwarnings(
+    "ignore",
+    message=".*PydanticSerializationUnexpectedValue.*Expected `none`.*parsed.*",
+    category=UserWarning,
+    module="pydantic",
+)
 
 log = structlog.get_logger(__name__)
 

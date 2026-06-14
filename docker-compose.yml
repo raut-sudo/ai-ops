@@ -36,7 +36,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: infra/Dockerfile.backend
+      dockerfile: backend/Dockerfile
     container_name: ai-ops-backend
     restart: unless-stopped
     ports:
@@ -50,6 +50,9 @@ services:
       QDRANT_PORT: 6333
       APP_ENV: development
       LOG_LEVEL: DEBUG
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,21 +61,29 @@ services:
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
 
   frontend:
-    build:
-      context: .
-      dockerfile: infra/Dockerfile.frontend
-      args:
-        BACKEND_URL: http://backend:8000
+    image: node:22-alpine
     container_name: ai-ops-frontend
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
       BACKEND_URL: http://backend:8000
-      NODE_ENV: production
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    working_dir: /app
     depends_on:
       backend:
         condition: service_started
+    command: >
+      sh -c "
+        corepack enable &&
+        corepack prepare pnpm@11.6.0 --activate &&
+        pnpm install --ignore-scripts &&
+        BACKEND_URL=http://backend:8000 pnpm dev
+      "
 
 volumes:
   pgdata:

@@ -43,14 +43,9 @@ _GRAPH_NODES = frozenset(
         "marketing_agent",
         "support_agent",
         "memory_retrieve",
-        "join_findings",
         "synthesizer",
         "reflection",
-        "action_agent",
-        "hitl_node",
-        "execute_actions",
-        "assemble_response",
-        "persist_incident",
+        "aggregator",
     }
 )
 
@@ -128,9 +123,11 @@ async def _event_generator(
                     yield _ndjson({"type": "synthesis", "synthesis": payload})
 
             # ── capture proposed_actions for hitl_pending terminal event ────
-            elif kind == "on_chain_end" and name == "action_agent":
+            elif kind == "on_chain_end" and name == "reflection":
                 output = event.get("data", {}).get("output") or {}
-                proposed_actions_snapshot = output.get("proposed_actions") or []
+                proposed_actions_snapshot = (
+                    output.get("proposed_actions") or proposed_actions_snapshot
+                )
 
     except Exception as exc:
         log.exception("chat.stream.error", thread_id=thread_id, error=str(exc))
@@ -146,7 +143,7 @@ async def _event_generator(
         return
 
     if _is_awaiting_hitl(snapshot):
-        # Terminal: graph is paused at hitl_node — emit hitl_pending (§17.4).
+        # Terminal: graph is paused inside reflection (HITL via interrupt()) — emit hitl_pending (§17.4).
         # Serialize action_type explicitly because it is a @property (§30.13).
         actions_payload = []
         for p in proposed_actions_snapshot:
