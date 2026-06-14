@@ -21,9 +21,23 @@ def tool_retry(func):
     )(func)
 
 
+# Normalize common LLM shorthand aliases to canonical period names
+_PERIOD_ALIASES: dict[str, str] = {
+    "1d": "yesterday",
+    "7d": "last_7_days",
+    "last_week": "last_7_days",
+    "weekly": "last_7_days",
+    "30d": "last_30_days",
+    "last_month": "last_30_days",
+    "monthly": "last_30_days",
+}
+
+
 def resolve_period(period: str) -> tuple[datetime, datetime]:
     """Map semantic time windows into UTC [start, end) timestamps."""
     end = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    period = _PERIOD_ALIASES.get(period, period)
 
     if period == "yesterday":
         return end - timedelta(days=1), end
