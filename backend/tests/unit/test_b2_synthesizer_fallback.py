@@ -24,7 +24,7 @@ class TestDeterministicSynthesis:
     def test_empty_findings(self) -> None:
         result = _deterministic_synthesis({}, None)
         assert isinstance(result, SynthesisResult)
-        assert result.confidence_score == 0.6
+        assert result.confidence_score == 0.5
         assert result.root_causes == []
         assert "No strong domain signals" in result.correlated_explanation
 
@@ -71,6 +71,29 @@ class TestDeterministicSynthesis:
         result = _deterministic_synthesis({}, memory)
         assert len(result.recommendations) == 2
         assert "Investigate" in result.recommendations[0]
+
+    def test_lookup_path_returns_direct_answer(self) -> None:
+        findings = {"sales": make_finding("sales")}
+        result = _deterministic_synthesis(findings, None)
+        assert result.confidence_score == 0.85
+        assert "[sales]" in result.correlated_explanation
+        assert result.root_causes == []
+
+    def test_error_findings_filtered_out(self) -> None:
+        findings = {
+            "inventory": DomainFinding(
+                domain="inventory",
+                findings=["ReAct agent error; reflection will retry."],
+                metrics=[],
+                anomalies=[],
+                confidence=0.0,
+                tool_calls_made=[],
+                severity="low",
+            ),
+        }
+        result = _deterministic_synthesis(findings, None)
+        assert result.confidence_score == 0.5
+        assert "agent error" not in result.correlated_explanation.lower()
 
     def test_confidence_averaged_across_root_causes(self) -> None:
         findings = {

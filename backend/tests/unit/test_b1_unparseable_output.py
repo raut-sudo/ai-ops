@@ -26,10 +26,10 @@ async def test_exception_returns_error_finding() -> None:
     with patch_credentials, patch_endpoint, patch_wait_for:
         result = await run_domain_react_agent(state, "inventory")
 
+    # Fix D: exception → _fallback returns deterministic finding, not error DomainFinding
     finding = result["domain_findings"]["inventory"]
-    assert finding.confidence == 0.0
-    assert "ReAct agent error" in finding.findings[0]
-    assert finding.tool_calls_made == []
+    assert finding.confidence > 0.0
+    assert len(finding.tool_calls_made) > 0
 
 
 @pytest.mark.asyncio

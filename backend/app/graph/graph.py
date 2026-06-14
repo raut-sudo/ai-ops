@@ -45,11 +45,13 @@ def build_graph() -> StateGraph:
 
     # ── Add all nodes ──
     g.add_node("intent_classifier", intent_classifier_node)
+
     g.add_node("sales_agent", sales_agent_node)
     g.add_node("inventory_agent", inventory_agent_node)
     g.add_node("marketing_agent", marketing_agent_node)
     g.add_node("support_agent", support_agent_node)
     g.add_node("memory_retrieve", memory_retrieve_node)
+
     g.add_node("join_findings", join_findings_node)
     g.add_node("synthesizer", synthesizer_node)
     g.add_node("reflection", reflection_node)

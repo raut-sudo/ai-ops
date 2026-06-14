@@ -6,6 +6,9 @@ import json
 import re
 from typing import Any
 
+import structlog
+from langgraph.errors import GraphRecursionError
+
 from app.config import settings
 from app.schemas import DomainFinding, MetricSnapshot
 from app.tools.adapters import READ_TOOLS
@@ -13,6 +16,8 @@ from app.tools.inventory import analyze_inventory, get_stock_level
 from app.tools.marketing import analyze_marketing
 from app.tools.sales import analyze_sales
 from app.tools.support import analyze_support
+
+logger = structlog.get_logger(__name__)
 
 _DOMAIN_TOOL_NAMES: dict[str, set[str]] = {
     "sales": {
@@ -379,6 +384,8 @@ def _parse_domain_response(domain: str, raw: str) -> dict:
 
 
 async def run_domain_react_agent(state: dict, domain: str) -> dict:
+    import os
+
     if not settings.AZURE_OPENAI_API_KEY or not settings.AZURE_OPENAI_ENDPOINT:
         return await _fallback(state, domain)
 
@@ -391,7 +398,7 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
             api_key=settings.AZURE_OPENAI_API_KEY,
             api_version=settings.AZURE_OPENAI_API_VERSION,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O,
-            temperature=0,
+            temperature=float(os.getenv("AZURE_TEMPRATURE", 0.8)),
         )
         agent = create_react_agent(model=llm, tools=_domain_tools(domain))
 
@@ -431,19 +438,9 @@ async def run_domain_react_agent(state: dict, domain: str) -> dict:
         if not last_text.strip():
             return await _fallback(state, domain)
         return _parse_domain_response(domain, last_text)
-    except Exception:
-        return {
-            "domain_findings": {
-                domain: DomainFinding(
-                    domain=domain,  # type: ignore[arg-type]
-                    findings=["ReAct agent error; reflection will retry."],
-                    metrics=[
-                        MetricSnapshot(name="agent_error", value=1, unit="flag", period="runtime")
-                    ],
-                    anomalies=[],
-                    confidence=0.0,
-                    tool_calls_made=[],
-                    severity="low",
-                )
-            }
-        }
+    except (TimeoutError, GraphRecursionError):
+        logger.warning("domain_agent_terminated", domain=domain, exc_info=True)
+        return await _fallback(state, domain)
+    except Exception as exc:
+        logger.warning("domain_agent_error", domain=domain, error=str(exc), exc_info=True)
+        return await _fallback(state, domain)

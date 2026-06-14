@@ -32,6 +32,14 @@ async def reflection_node(state: AgentState) -> dict:
                 missing_information=["synthesis"],
                 confidence=0.3,
             )
+        elif synthesis.confidence_score >= 0.8 and not synthesis.root_causes:
+            # Confident answer with empty root_causes = valid LOOKUP result — do NOT retry.
+            result = ReflectionResult(
+                verdict="pass",
+                critique="High-confidence synthesis with no root causes confirms a LOOKUP result.",
+                domains_to_retry=[],
+                confidence=synthesis.confidence_score,
+            )
         elif (
             not synthesis.root_causes
             and intent
