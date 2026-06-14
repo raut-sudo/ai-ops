@@ -3,7 +3,7 @@
 Blueprint FR-16, FR-17, NFR-12:
   Test 1 (FR-16): true-concurrent approves execute the action exactly once.
   Test 2 (FR-17): re-approve after completion returns 'skipped', no double write.
-  Test 3 (NFR-12): Qdrant outage in persist_incident does NOT fail the response.
+  Test 3 (NFR-12): Qdrant outage in aggregator does NOT fail the response.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from sqlalchemy import text
 from app.db.models import IncidentAction
 from app.db.models import Session as SessionModel
 from app.db.session import get_session
-from app.graph.nodes.execute_actions import execute_actions_node
-from app.graph.nodes.persist_incident import persist_incident_node
+from app.graph.nodes.aggregator import aggregator_node
+from app.graph.nodes.reflection import _execute_approved_actions
 from app.schemas import (
     ActionProposal,
     HITLDecision,
@@ -126,7 +126,7 @@ async def test_concurrent_approve_executes_action_exactly_once() -> None:
     """FR-16 §24.2: two simultaneous approve calls must execute exactly one restock.
 
     Uses asyncio.gather (true concurrent co-routine scheduling) to fire two
-    execute_actions_node calls on the same action_id. The conditional
+    _execute_approved_actions calls on the same action_id. The conditional
     UPDATE ... WHERE status='proposed' ensures only one wins.
     """
     action_id = str(uuid.uuid4())
@@ -136,11 +136,13 @@ async def test_concurrent_approve_executes_action_exactly_once() -> None:
     proposal = await _seed_proposed_action(action_id, thread_id, qty)
     before = await get_stock_level("SKU-101")
     state = _exec_state(proposal)
+    decision = state["hitl_decision"]
+    proposals = state["proposed_actions"]
 
     # Fire two concurrent executions
     r1, r2 = await asyncio.gather(
-        execute_actions_node(state),
-        execute_actions_node(state),
+        _execute_approved_actions(proposals, decision, state),
+        _execute_approved_actions(proposals, decision, state),
         return_exceptions=True,
     )
 
@@ -148,7 +150,7 @@ async def test_concurrent_approve_executes_action_exactly_once() -> None:
     moves = await _movement_count(action_id)
 
     # One executed, one skipped
-    statuses = {r["action_results"][0].status for r in (r1, r2)}  # type: ignore[index]
+    statuses = {r[0].status for r in (r1, r2)}  # type: ignore[index]
     assert "executed" in statuses, "At least one call must have executed"
     assert "skipped" in statuses, "At least one call must have been skipped"
 
@@ -192,17 +194,19 @@ async def test_reapprove_after_completion_is_idempotent() -> None:
     proposal = await _seed_proposed_action(action_id, thread_id, qty)
     before = await get_stock_level("SKU-101")
     state = _exec_state(proposal)
+    decision = state["hitl_decision"]
+    proposals = state["proposed_actions"]
 
     # ── First execution ──
-    first = await execute_actions_node(state)
-    assert first["action_results"][0].status == "executed"
+    first = await _execute_approved_actions(proposals, decision, state)
+    assert first[0].status == "executed"
     mid = await get_stock_level("SKU-101")
     assert mid["quantity_on_hand"] == before["quantity_on_hand"] + qty
 
     # ── Second execution (re-approve after completion) ──
-    second = await execute_actions_node(state)
-    assert second["action_results"][0].status == "skipped"
-    assert second["action_results"][0].result_payload["reason"] == "already_processed"
+    second = await _execute_approved_actions(proposals, decision, state)
+    assert second[0].status == "skipped"
+    assert second[0].result_payload["reason"] == "already_processed"
 
     # Stock must NOT have changed again
     after = await get_stock_level("SKU-101")
@@ -228,12 +232,12 @@ async def test_reapprove_after_completion_is_idempotent() -> None:
         await session.commit()
 
 
-# ── Test 3 (NFR-12): Qdrant outage must not fail persist_incident ─────────────
+# ── Test 3 (NFR-12): Qdrant outage must not fail aggregator ─────────────────
 
 
 @pytest.mark.asyncio
-async def test_persist_incident_qdrant_outage_does_not_fail_response() -> None:
-    """NFR-12 §30.6: Qdrant unavailable → persist_incident returns {}, never raises.
+async def test_aggregator_qdrant_outage_does_not_fail_response() -> None:
+    """NFR-12 §30.6: Qdrant unavailable → aggregator returns final_response, never raises.
 
     The user-facing final_response must be unaffected by a vector-store outage.
     Only future memory recall degrades — the current response does not.
@@ -271,6 +275,13 @@ async def test_persist_incident_qdrant_outage_does_not_fail_response() -> None:
         ),
         "proposed_actions": [],
         "action_results": [],
+        "domain_findings": {},
+        "memory_context": None,
+        "reflection_result": None,
+        "retry_count": 0,
+        "hitl_decision": None,
+        "final_response": None,
+        "error": None,
         "otel_trace_id": "test-trace",
         "langsmith_run_id": None,
         "created_at": datetime.now(UTC),
@@ -279,18 +290,18 @@ async def test_persist_incident_qdrant_outage_does_not_fail_response() -> None:
     # Qdrant raises — embed_text returns a valid vector but qdrant_upsert fails
     with (
         patch(
-            "app.graph.nodes.persist_incident.embed_text",
+            "app.graph.nodes.aggregator.embed_text",
             new=AsyncMock(return_value=[0.0] * 1536),
         ),
         patch(
-            "app.graph.nodes.persist_incident.qdrant_upsert",
+            "app.graph.nodes.aggregator.qdrant_upsert",
             new=AsyncMock(side_effect=Exception("Qdrant connection refused")),
         ),
     ):
-        result = await persist_incident_node(state)
+        result = await aggregator_node(state)
 
-    # Must return {} without raising
-    assert result == {}
+    # Must return final_response without raising
+    assert result["final_response"] is not None
 
     # Postgres incident row should still have been written
     async with get_session() as session:
@@ -306,8 +317,8 @@ async def test_persist_incident_qdrant_outage_does_not_fail_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persist_incident_complete_outage_does_not_fail_response() -> None:
-    """NFR-12: even a full Postgres + Qdrant outage in persist_incident returns {}.
+async def test_aggregator_complete_outage_does_not_fail_response() -> None:
+    """NFR-12: even a full Postgres + Qdrant outage in aggregator returns a final_response.
 
     This tests the outer exception handler that wraps both writes.
     """
@@ -344,14 +355,24 @@ async def test_persist_incident_complete_outage_does_not_fail_response() -> None
         ),
         "proposed_actions": [],
         "action_results": [],
+        "domain_findings": {},
+        "memory_context": None,
+        "reflection_result": None,
+        "retry_count": 0,
+        "hitl_decision": None,
+        "final_response": None,
+        "error": None,
+        "otel_trace_id": "test-trace",
+        "langsmith_run_id": None,
+        "created_at": datetime.now(UTC),
     }
 
     # Patch get_session at the module level to simulate DB outage
     with patch(
-        "app.graph.nodes.persist_incident.get_session",
+        "app.graph.nodes.aggregator.get_session",
         side_effect=Exception("DB connection refused"),
     ):
-        result = await persist_incident_node(state)
+        result = await aggregator_node(state)
 
-    # Must return {} without raising — user response is unaffected
-    assert result == {}
+    # Must return final_response without raising — user response is unaffected
+    assert result["final_response"] is not None

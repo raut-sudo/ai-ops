@@ -16,13 +16,16 @@ async def test_graph_compiles():
     """Verify build_graph() compiles without errors."""
     graph = build_graph()
     assert graph is not None
-    # Check node count
-    assert len(graph.nodes) == 14, f"Expected 14 nodes, got {len(graph.nodes)}"
+    # 9 nodes: intent_classifier, 4 domain agents, memory_retrieve, synthesizer, reflection, aggregator
+    assert len(graph.nodes) == 9, f"Expected 9 nodes, got {len(graph.nodes)}"
 
 
 @pytest.mark.asyncio
 async def test_graph_runs_irrelevant_intent_to_end():
-    """Verify graph runs end-to-end for irrelevant intent (no checkpointer)."""
+    """Verify graph runs end-to-end for irrelevant intent (no checkpointer).
+
+    irrelevant intent → aggregator → END
+    """
     graph = build_graph()
     compiled = graph.compile()
 
@@ -66,14 +69,10 @@ async def test_graph_runs_irrelevant_intent_to_end():
 
 
 @pytest.mark.asyncio
-async def test_graph_runs_business_diagnosis_through_fanout():
-    """Verify graph runs end-to-end through the full post-fanout path to END.
+async def test_graph_runs_irrelevant_second_query_to_end():
+    """Verify graph runs end-to-end for a second irrelevant query.
 
-    Pre-seeds domain_findings + synthesis + reflection_result so the graph
-    starts at intent_classifier, which re-sets retry_count=0 on the existing
-    intent, routes to action_agent (via route_after_reflection), and then
-    directly to assemble_response (no proposals = no HITL pause) -> END.
-    No Postgres or live LLM required.
+    irrelevant intent → aggregator → END (no DB, no LLM required)
     """
 
     graph = build_graph()
@@ -107,7 +106,7 @@ async def test_graph_runs_business_diagnosis_through_fanout():
         "created_at": datetime.now(UTC),
     }
 
-    # irrelevant intent -> assemble_response -> persist_incident -> END
+    # irrelevant intent → aggregator → END
     result = await compiled.ainvoke(initial_state)
 
     assert result is not None

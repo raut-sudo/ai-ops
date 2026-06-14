@@ -46,7 +46,7 @@ def _make_final_response(thread_id: str) -> FinalResponse:
 def _paused_snapshot(thread_id: str):
     """Snapshot that _is_awaiting_hitl returns True for."""
     snap = MagicMock()
-    snap.next = ("hitl_node",)
+    snap.next = ("reflection",)
     snap.values = {"final_response": None}
     return snap
 

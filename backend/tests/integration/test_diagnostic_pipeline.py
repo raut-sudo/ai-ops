@@ -93,18 +93,18 @@ def _make_mock_agent() -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_golden_trace_reaches_action_agent_with_two_root_causes() -> None:
+async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
     """Blueprint §24.1 / §13.4 Exit Criteria:
 
-    - Diagnosis reaches action_agent.
+    - Diagnosis reaches reflection.
     - Synthesis contains ≥2 root causes: stockout (inventory) + paused campaign (marketing).
     - reflection_result.verdict == 'pass'.
-    - proposed_actions populated (proves action_agent was reached and produced output).
+    - proposed_actions populated (proves reflection generated action proposals).
 
     Domain agents are mocked via patch so canned DomainFinding objects reach the
     synthesizer deterministically — no live DB or Azure OpenAI required.
     HITL interrupt() is mocked to reject all proposals (empty approved_action_ids)
-    so the graph continues to assemble_response without a checkpointer.
+    so the graph continues to aggregator without a checkpointer.
     """
     graph = build_graph().compile()
 
@@ -139,13 +139,13 @@ async def test_golden_trace_reaches_action_agent_with_two_root_causes() -> None:
 
     mock_agent = _make_mock_agent()
     # interrupt() is mocked to return a rejection dict so the graph
-    # proceeds to assemble_response without requiring a checkpointer.
+    # proceeds to aggregator without requiring a checkpointer.
     with (
         patch("app.graph.nodes.sales_agent.run_domain_react_agent", mock_agent),
         patch("app.graph.nodes.inventory_agent.run_domain_react_agent", mock_agent),
         patch("app.graph.nodes.marketing_agent.run_domain_react_agent", mock_agent),
         patch(
-            "app.graph.nodes.hitl_node.interrupt",
+            "app.graph.nodes.reflection.interrupt",
             return_value={"approved_action_ids": [], "approver": "test-auto-reject"},
         ),
     ):
@@ -170,13 +170,13 @@ async def test_golden_trace_reaches_action_agent_with_two_root_causes() -> None:
     assert reflection is not None, "Reflection must produce a ReflectionResult"
     assert reflection.verdict == "pass", f"Expected verdict='pass', got '{reflection.verdict}'"
 
-    # ── Action agent reached (Exit Criteria: "reaches action_agent") ──────────
+    # ── Reflection reached + action proposals generated ───────────────────────
     assert (
         result.get("proposed_actions") is not None
-    ), "action_agent must set proposed_actions (even if empty list)"
+    ), "reflection must set proposed_actions (even if empty list)"
     assert (
         len(result["proposed_actions"]) >= 1
-    ), "action_agent must propose at least one action when two root causes are present."
+    ), "reflection must propose at least one action when two root causes are present."
 
     # ── Final response assembled ──────────────────────────────────────────────
     assert result["final_response"] is not None
@@ -276,7 +276,7 @@ async def test_retry_count_increments_on_reflection() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
-    """When retry_count >= MAX_RETRIES, route goes to assemble_response."""
+    """When retry_count >= MAX_RETRIES, route goes to aggregator."""
     from app.graph import edges
 
     state = {
@@ -314,4 +314,4 @@ async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
     }
 
     route = edges.route_after_reflection(state)
-    assert route == "assemble_response", f"Expected assemble_response when capped, got: {route}"
+    assert route == "aggregator", f"Expected aggregator when capped, got: {route}"
