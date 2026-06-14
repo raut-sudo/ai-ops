@@ -160,7 +160,7 @@ async def _get_revenue_lost_to_stockouts_impl(session: AsyncSession, period: str
                 oi.sku,
                 COALESCE(SUM(oi.line_total), 0)
                     / GREATEST(
-                        EXTRACT(DAY FROM (:start::timestamptz - :prev_start::timestamptz))::int,
+                        EXTRACT(DAY FROM ((:start)::timestamptz - (:prev_start)::timestamptz))::int,
                         1
                     ) AS avg_daily_revenue
             FROM order_items oi

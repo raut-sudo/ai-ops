@@ -333,7 +333,17 @@ def _as_metric(item: dict[str, Any]) -> MetricSnapshot | None:
 
 def _parse_domain_response(domain: str, raw: str) -> dict:
     try:
-        data = json.loads(raw)
+        clean = raw.strip()
+        # 1. Strip markdown code fences: ```json ... ``` or ``` ... ```
+        fence_match = re.search(r"```(?:\w+)?\s*\n?(.*?)```", clean, re.DOTALL)
+        if fence_match:
+            clean = fence_match.group(1).strip()
+        # 2. Fallback: extract outermost JSON object if LLM adds prose around it
+        if not clean.startswith("{"):
+            brace = clean.find("{")
+            if brace != -1:
+                clean = clean[brace:]
+        data = json.loads(clean)
     except Exception:
         return {
             "domain_findings": {
