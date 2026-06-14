@@ -38,8 +38,9 @@ Return a structured `DomainFinding` JSON:
   "findings": ["Campaign PROMO-12 has ROAS 0.6 — spending $1.67 per $1 revenue"],
   "anomalies": ["PROMO-12 ROAS: 0.6 (below break-even threshold of 1.0)"],
   "metrics": [{"name": "avg_roas", "value": 1.8, "unit": "ratio"}],
-  "confidence": 0.85,
   "severity": "high",
   "tool_calls_made": ["analyze_marketing", "get_underperforming_campaigns"]
 }
 ```
+
+Note: `status` is set by the framework based on tool outcomes — you do not control it.

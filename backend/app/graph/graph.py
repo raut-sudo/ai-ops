@@ -1,12 +1,14 @@
 """LangGraph construction: build_graph() + compile_graph().
 
-9-node topology:
+Topology:
   START → orchestrator
   orchestrator → [domain agents] + optional memory_agent (parallel fan-out)
   domain agents / memory_agent → synthesizer
   synthesizer → reflection
-  reflection → (retry fan-out OR response_composer)
-  response_composer → END"""
+  reflection → (retry fan-out OR action_executor OR response_composer)
+  action_executor → response_composer
+  response_composer → END
+"""
 
 from __future__ import annotations
 
@@ -15,10 +17,11 @@ from langgraph.graph import END, START, StateGraph
 
 from app.config import settings
 from app.graph.edges import (
-    route_after_orchestrator,
+    route_after_intent,
     route_after_reflection,
 )
 from app.graph.nodes import (
+    action_executor_node,
     inventory_agent_node,
     marketing_agent_node,
     memory_agent_node,
@@ -33,7 +36,7 @@ from app.graph.state import AgentState
 
 
 def build_graph() -> StateGraph:
-    """Construct the 6-node graph topology.
+    """Construct the graph topology.
 
     Returns:
         StateGraph with all nodes wired and conditional edges defined.
@@ -53,6 +56,7 @@ def build_graph() -> StateGraph:
     # Core pipeline
     g.add_node("synthesizer", synthesizer_node)
     g.add_node("reflection", reflection_node)
+    g.add_node("action_executor", action_executor_node)
     g.add_node("response_composer", response_composer_node)
 
     # ── Add edges ──
@@ -60,8 +64,8 @@ def build_graph() -> StateGraph:
     # START → orchestrator
     g.add_edge(START, "orchestrator")
 
-    # orchestrator → conditional (fan-out to domain agents, memory_agent, or response_composer)
-    g.add_conditional_edges("orchestrator", route_after_orchestrator)
+    # orchestrator → conditional (fan-out to domain agents, memory, or response_composer)
+    g.add_conditional_edges("orchestrator", route_after_intent)
 
     # Domain agents + memory_agent → synthesizer (parallel fan-out convergence)
     for node in [
@@ -76,8 +80,11 @@ def build_graph() -> StateGraph:
     # synthesizer → reflection
     g.add_edge("synthesizer", "reflection")
 
-    # reflection → conditional (retry fan-out OR response_composer)
+    # reflection → conditional (retry fan-out OR action_executor OR response_composer)
     g.add_conditional_edges("reflection", route_after_reflection)
+
+    # action_executor → response_composer
+    g.add_edge("action_executor", "response_composer")
 
     # response_composer → END
     g.add_edge("response_composer", END)

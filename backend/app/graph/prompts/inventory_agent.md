@@ -41,8 +41,9 @@ Return a structured `DomainFinding` JSON:
   "findings": ["SKU-890 has been out of stock for 3 days, losing ~$4 200 in revenue"],
   "anomalies": ["SKU-890: zero stock (critical)"],
   "metrics": [{"name": "revenue_lost", "value": 4200.0, "unit": "USD"}],
-  "confidence": 0.91,
   "severity": "critical",
   "tool_calls_made": ["analyze_inventory", "get_stockout_history", "get_revenue_lost_to_stockouts"]
 }
 ```
+
+Note: `status` is set by the framework based on tool outcomes — you do not control it.

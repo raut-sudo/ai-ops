@@ -46,7 +46,7 @@ def _make_final_response(thread_id: str) -> FinalResponse:
 def _paused_snapshot(thread_id: str):
     """Snapshot that _is_awaiting_hitl returns True for."""
     snap = MagicMock()
-    snap.next = ("reflection",)
+    snap.next = ("action_executor",)  # _is_awaiting_hitl checks for action_executor
     snap.values = {"final_response": None}
     return snap
 
@@ -94,7 +94,7 @@ async def test_approve_resume_round_trip() -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["thread_id"] == thread_id
-    assert body["status"] in {"success", "low_confidence", "hitl_pending", "irrelevant"}
+    assert body["status"] in {"success", "hitl_pending", "irrelevant", "error"}
 
     # Verify round-trip invariant: after resume, _is_awaiting_hitl returns False
     assert _is_awaiting_hitl(paused_snap) is True

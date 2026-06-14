@@ -38,7 +38,6 @@ def _default_intent() -> IntentClassification:
         required_domains=["sales", "inventory", "marketing", "support"],
         memory_needed=True,
         action_only=False,
-        confidence=0.1,
         reasoning="Orchestrator error — defaulting to broad investigation.",
     )
 
@@ -90,7 +89,7 @@ async def orchestrator_node(state: AgentState) -> dict:
             "orchestrator_classified",
             intent_type=intent.intent_type,
             domains=intent.required_domains,
-            confidence=intent.confidence,
+            action_only=intent.action_only,
         )
 
     except Exception as exc:

@@ -45,6 +45,7 @@ _GRAPH_NODES = frozenset(
         "memory_agent",
         "synthesizer",
         "reflection",
+        "action_executor",
         "response_composer",
     }
 )
@@ -123,7 +124,7 @@ async def _event_generator(
                     yield _ndjson({"type": "synthesis", "synthesis": payload})
 
             # ── capture proposed_actions for hitl_pending terminal event ────
-            elif kind == "on_chain_end" and name == "reflection":
+            elif kind == "on_chain_end" and name in ("reflection", "action_executor"):
                 output = event.get("data", {}).get("output") or {}
                 proposed_actions_snapshot = (
                     output.get("proposed_actions") or proposed_actions_snapshot
@@ -143,8 +144,8 @@ async def _event_generator(
         return
 
     if _is_awaiting_hitl(snapshot):
-        # Terminal: graph is paused inside reflection (HITL via interrupt()) — emit hitl_pending (§17.4).
-        # Serialize action_type explicitly because it is a @property (§30.13).
+        # Terminal: graph is paused inside action_executor (HITL via interrupt()) — emit hitl_pending.
+        # Serialize action_type explicitly because it is a @property.
         actions_payload = []
         for p in proposed_actions_snapshot:
             if hasattr(p, "model_dump"):
@@ -154,9 +155,9 @@ async def _event_generator(
             else:
                 actions_payload.append(p)
 
-        # When interrupt() fires the reflection node never emits on_chain_end, so
+        # When interrupt() fires the action_executor node never emits on_chain_end, so
         # proposed_actions_snapshot may be empty.  Fall back to the interrupt payload
-        # that LangGraph checkpointed in snapshot.tasks[*].interrupts (§30.13 fix).
+        # that LangGraph checkpointed in snapshot.tasks[*].interrupts.
         if not actions_payload:
             for task in getattr(snapshot, "tasks", ()) or ():
                 for intr in getattr(task, "interrupts", ()) or ():
@@ -231,16 +232,16 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     # ── Build initial AgentState ─────────────────────────────────────────
     # messages only contains the new HumanMessage; the add_messages reducer
     # will merge this with the persisted history from the checkpoint.
+    # NOTE: Only include fields that should be set fresh per-turn.
+    # Do NOT include retry_count, proposed_actions, action_results, or
+    # domain_findings — these either use reducers (domain_findings) or should
+    # persist across the graph run from their default/checkpoint values.
     initial_state: dict = {
         "session_id": thread_id,
         "thread_id": thread_id,
         "user_id": user_id,
         "query": body.query,
         "messages": [HumanMessage(content=body.query)],
-        "retry_count": 0,
-        "domain_findings": {},
-        "proposed_actions": [],
-        "action_results": [],
         "otel_trace_id": "",
     }
 

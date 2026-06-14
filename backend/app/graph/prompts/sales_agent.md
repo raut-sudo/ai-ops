@@ -40,11 +40,12 @@ Return a structured `DomainFinding` JSON:
   "findings": ["Revenue fell 22% WoW, driven by SKU-890 (-45%)"],
   "anomalies": ["SKU-890 revenue: -45% (critical threshold: -30%)"],
   "metrics": [{"name": "revenue_wow_change", "value": -22.0, "unit": "percent"}],
-  "confidence": 0.87,
   "severity": "high",
   "tool_calls_made": ["analyze_sales", "get_declining_products"]
 }
 ```
+
+Note: `status` is set by the framework based on tool outcomes — you do not control it.
 
 Severity scale:
 - `low` — within normal variation

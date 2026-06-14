@@ -1,6 +1,6 @@
 """Tests for domain agent error handling after _react_domain refactor.
 
-Verifies that each domain agent node returns a valid low-confidence
+Verifies that each domain agent node returns a valid error-status
 DomainFinding when the underlying LLM call fails, rather than crashing
 or returning None.
 """
@@ -29,7 +29,7 @@ async def test_inventory_agent_exception_returns_error_finding() -> None:
 
     finding = result["domain_findings"]["inventory"]
     assert finding is not None
-    assert finding.confidence == 0.1
+    assert finding.status == "error"
     assert finding.severity == "low"
     assert any("Agent error" in f for f in finding.findings)
     assert finding.tool_calls_made == []
@@ -49,7 +49,7 @@ async def test_sales_agent_exception_returns_error_finding() -> None:
 
     finding = result["domain_findings"]["sales"]
     assert finding is not None
-    assert finding.confidence == 0.1
+    assert finding.status == "error"
     assert finding.severity == "low"
     assert any("Agent error" in f for f in finding.findings)
 
@@ -67,4 +67,4 @@ async def test_inventory_agent_none_structured_response_returns_error_finding() 
         result = await inventory_agent_node(state)
 
     finding = result["domain_findings"]["inventory"]
-    assert finding.confidence == 0.1
+    assert finding.status == "error"

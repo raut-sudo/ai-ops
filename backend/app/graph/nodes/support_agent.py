@@ -41,7 +41,7 @@ def _error_finding(reason: str) -> DomainFinding:
         findings=[f"Agent error: {reason}"],
         metrics=[],
         anomalies=[],
-        confidence=0.1,
+        status="error",
         tool_calls_made=[],
         severity="low",
     )
@@ -85,7 +85,15 @@ async def support_agent_node(state: dict) -> dict:
         if finding is None:
             raise ValueError("structured_response was None")
 
-        logger.info("support_agent_success", confidence=finding.confidence)
+        # Override LLM-self-reported status with grounded check.
+        if not finding.tool_calls_made:
+            finding.status = "error"
+        elif not finding.findings and not finding.anomalies:
+            finding.status = "partial"
+        else:
+            finding.status = "ok"
+
+        logger.info("support_agent_success", status=finding.status)
 
     except Exception as exc:
         logger.warning("support_agent_error", error=str(exc), exc_info=True)

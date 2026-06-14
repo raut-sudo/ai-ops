@@ -255,7 +255,6 @@ async def test_aggregator_qdrant_outage_does_not_fail_response() -> None:
             required_domains=["inventory"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Test.",
         ),
         "synthesis": SynthesisResult(
@@ -265,11 +264,10 @@ async def test_aggregator_qdrant_outage_does_not_fail_response() -> None:
                     cause="Stockout",
                     domain="inventory",
                     evidence=["qty=0"],
-                    confidence=0.9,
                 )
             ],
             contributing_factors={},
-            confidence_score=0.9,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),
@@ -339,7 +337,6 @@ async def test_aggregator_complete_outage_does_not_fail_response() -> None:
             required_domains=["inventory"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Test.",
         ),
         "synthesis": SynthesisResult(
@@ -349,11 +346,10 @@ async def test_aggregator_complete_outage_does_not_fail_response() -> None:
                     cause="Stockout",
                     domain="inventory",
                     evidence=["qty=0"],
-                    confidence=0.9,
                 )
             ],
             contributing_factors={},
-            confidence_score=0.9,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),

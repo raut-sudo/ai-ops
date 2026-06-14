@@ -42,8 +42,9 @@ Return a structured `DomainFinding` JSON:
   "findings": ["SKU-890 has a 14% refund rate with 'defective product' as top reason"],
   "anomalies": ["SKU-890 refund rate: 14% (threshold: 10%)"],
   "metrics": [{"name": "refund_rate", "value": 14.0, "unit": "percent"}],
-  "confidence": 0.88,
   "severity": "high",
   "tool_calls_made": ["analyze_support", "get_products_with_high_complaint_rate", "get_common_return_reasons"]
 }
 ```
+
+Note: `status` is set by the framework based on tool outcomes — you do not control it.

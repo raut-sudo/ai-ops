@@ -148,7 +148,7 @@ def _build_composer_context(state: AgentState) -> str:
         if synthesis.root_causes:
             parts.append("Root causes:")
             for rc in synthesis.root_causes:
-                parts.append(f"  - [{rc.domain}] {rc.cause} (confidence {rc.confidence:.0%})")
+                parts.append(f"  - [{rc.domain}] {rc.cause}")
         if synthesis.recommendations:
             parts.append("Recommendations: " + "; ".join(synthesis.recommendations))
 
@@ -162,9 +162,6 @@ def _build_composer_context(state: AgentState) -> str:
         parts.append(
             f"\nHistorical context: {len(memory_context.past_incidents)} similar past incidents found."
         )
-
-    confidence = synthesis.confidence_score if synthesis else 0.0
-    parts.append(f"\nOverall confidence: {confidence:.0%}")
 
     return "\n".join(parts)
 
@@ -185,6 +182,29 @@ async def _compose_summary(state: AgentState) -> str:
         if mc and mc.past_incidents:
             return f"Found {len(mc.past_incidents)} relevant past incident(s)."
         return "No relevant past incidents found."
+
+    # For direct_action: build a plain-language summary from the executed action results
+    if intent and (intent.action_only or intent.intent_type == "direct_action"):
+        action_results = state.get("action_results") or []
+        proposed_actions = state.get("proposed_actions") or []
+        proposal_map = {p.action_id: p for p in proposed_actions}
+        lines = []
+        for r in action_results:
+            proposal = proposal_map.get(r.action_id)
+            label = f"{proposal.action_type} on {proposal.target}" if proposal else r.action_id
+            if r.status == "executed":
+                lines.append(f"Action completed: {label}.")
+                if r.result_payload:
+                    detail = ", ".join(f"{k}={v}" for k, v in r.result_payload.items())
+                    lines.append(f"Result: {detail}.")
+            elif r.status == "skipped":
+                reason = (r.result_payload or {}).get("reason", "skipped")
+                lines.append(f"Action skipped: {label} ({reason}).")
+            else:
+                lines.append(f"Action {r.status}: {label}.")
+        if not lines:
+            return f"Action request received: {state.get('query', '')}. No actions were executed."
+        return " ".join(lines)
 
     if synthesis is None:
         return "Investigation completed with limited findings."
@@ -233,20 +253,13 @@ async def response_composer_node(state: AgentState) -> dict:
     action_results = state.get("action_results") or []
     proposed_actions = state.get("proposed_actions") or []
 
-    # Confidence: prefer synthesis score, fall back to reflection
-    confidence: float = 0.0
-    if synthesis:
-        confidence = synthesis.confidence_score
-    elif state.get("reflection_result"):
-        confidence = state["reflection_result"].confidence  # type: ignore[union-attr]
-
-    # Status
+    # Status: derive from synthesis.status or error/irrelevant special cases
     if state.get("error"):
         status = "error"
     elif intent and intent.intent_type == "irrelevant":
         status = "irrelevant"
-    elif confidence < 0.5:
-        status = "low_confidence"
+    elif synthesis and synthesis.status == "insufficient":
+        status = "success"  # Surface what we have rather than penalising the user
     else:
         status = "success"
 
@@ -265,8 +278,6 @@ async def response_composer_node(state: AgentState) -> dict:
         recommendations=synthesis.recommendations if synthesis else [],
         proposed_actions=proposed_actions,
         executed_actions=action_results,
-        confidence_score=confidence,
-        low_confidence_flag=confidence < 0.5,
         thread_id=state["thread_id"],
         otel_trace_id=state.get("otel_trace_id", ""),
         langsmith_run_id=state.get("langsmith_run_id"),

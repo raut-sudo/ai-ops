@@ -43,6 +43,7 @@ Thumbs.db
 *.log
 *.bak
 *.tmp
+test_results.txt
 plan.md
 BLURPRINT.md
 

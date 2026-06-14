@@ -68,11 +68,10 @@ def _make_full_state(
                 cause="SKU-101 out of stock",
                 domain="inventory",
                 evidence=["SKU-101 quantity_on_hand=0", "OOS since yesterday 10:00"],
-                confidence=0.95,
             )
         ],
         contributing_factors={"inventory": "stockout"},
-        confidence_score=0.95,
+        status="answered",
         recommendations=["Restock SKU-101 immediately"],
         domains_correlated=["inventory"],
     )
@@ -88,7 +87,6 @@ def _make_full_state(
             required_domains=["sales", "inventory"],
             memory_needed=True,
             action_only=False,
-            confidence=0.95,
             reasoning="Sales drop likely driven by inventory stockout.",
         ),
         "domain_findings": {
@@ -99,7 +97,7 @@ def _make_full_state(
                     MetricSnapshot(name="quantity_on_hand", value=0, unit="units", period="now")
                 ],
                 anomalies=["SKU-101 is out of stock."],
-                confidence=0.95,
+                status="ok",
                 tool_calls_made=["get_stock_level"],
                 severity="critical",
             )
@@ -113,7 +111,6 @@ def _make_full_state(
         "reflection_result": ReflectionResult(
             verdict="pass",
             critique="Root causes confirmed; action recommended.",
-            confidence=0.95,
         ),
         "retry_count": 1,
         "proposed_actions": [proposal],
@@ -343,7 +340,6 @@ async def test_aggregator_builds_final_response_from_synthesis() -> None:
     fr = result["final_response"]
 
     assert fr.status == "success"
-    assert fr.confidence_score == pytest.approx(0.95, abs=0.01)
     assert fr.session_id == f"session-{thread_id}"
     assert len(fr.root_causes) == 1
     assert (
@@ -351,7 +347,6 @@ async def test_aggregator_builds_final_response_from_synthesis() -> None:
         or "out of stock" in fr.root_causes[0].cause.lower()
     )
     assert fr.executed_actions[0].status == "executed"
-    assert not fr.low_confidence_flag
 
 
 @pytest.mark.asyncio
@@ -370,7 +365,6 @@ async def test_aggregator_persists_incident_to_postgres() -> None:
             required_domains=["inventory"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Test.",
         ),
         "synthesis": SynthesisResult(
@@ -380,11 +374,10 @@ async def test_aggregator_persists_incident_to_postgres() -> None:
                     cause="Stockout",
                     domain="inventory",
                     evidence=["qty=0"],
-                    confidence=0.9,
                 )
             ],
             contributing_factors={},
-            confidence_score=0.9,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),
@@ -451,16 +444,13 @@ async def test_aggregator_skips_persist_for_memory_recall_intent() -> None:
             required_domains=[],
             memory_needed=True,
             action_only=False,
-            confidence=0.9,
             reasoning="User asked about past incidents.",
         ),
         "synthesis": SynthesisResult(
             correlated_explanation="Past incidents found.",
-            root_causes=[
-                RootCause(cause="prior stockout", domain="inventory", evidence=[], confidence=0.8)
-            ],
+            root_causes=[RootCause(cause="prior stockout", domain="inventory", evidence=[])],
             contributing_factors={},
-            confidence_score=0.8,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),

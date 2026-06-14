@@ -119,7 +119,7 @@ async def test_chat_stream_terminates_with_hitl_pending_when_proposals_exist(cli
 
     # Snapshot shows graph is paused inside reflection (HITL via interrupt())
     mock_snapshot = MagicMock()
-    mock_snapshot.next = ("reflection",)  # _is_awaiting_hitl returns True
+    mock_snapshot.next = ("action_executor",)  # _is_awaiting_hitl checks for action_executor
     mock_snapshot.values = {
         "final_response": None,
         "proposed_actions": [proposal],

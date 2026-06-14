@@ -39,7 +39,7 @@ def _canned_inventory_finding() -> DomainFinding:
             MetricSnapshot(name="reorder_point", value=50, unit="units", period="now"),
         ],
         anomalies=["SKU-101 is out of stock."],
-        confidence=0.95,
+        status="ok",
         tool_calls_made=["get_stock_level"],
         severity="critical",
     )
@@ -54,7 +54,7 @@ def _canned_marketing_finding() -> DomainFinding:
             MetricSnapshot(name="paused_campaign_count", value=1, unit="count", period="yesterday"),
         ],
         anomalies=["Paused campaign state may suppress demand."],
-        confidence=0.88,
+        status="ok",
         tool_calls_made=["get_campaign_performance"],
         severity="high",
     )
@@ -70,7 +70,7 @@ def _canned_sales_finding() -> DomainFinding:
             ),
         ],
         anomalies=["revenue materially below baseline."],
-        confidence=0.9,
+        status="ok",
         tool_calls_made=["get_sales_metrics"],
         severity="high",
     )
@@ -107,7 +107,6 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
         required_domains=["sales", "inventory", "marketing"],
         memory_needed=False,
         action_only=False,
-        confidence=0.95,
         reasoning="Sales drop likely spans inventory and marketing.",
     )
 
@@ -121,17 +120,15 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
                 cause="SKU-101 out of stock",
                 domain="inventory",
                 evidence=["qty=0"],
-                confidence=0.95,
             ),
             RootCause(
                 cause="Paused campaign suppressed demand",
                 domain="marketing",
                 evidence=["1 paused campaign"],
-                confidence=0.88,
             ),
         ],
         contributing_factors={"inventory": "stockout", "marketing": "paused campaign"},
-        confidence_score=0.95,
+        status="answered",
         recommendations=["Restock SKU-101", "Resume paused campaign"],
         domains_correlated=["inventory", "marketing", "sales"],
     )
@@ -139,7 +136,6 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
     canned_reflection = ReflectionResult(
         verdict="pass",
         critique="Root causes confirmed across two domains.",
-        confidence=0.95,
     )
 
     canned_proposals = [
@@ -187,7 +183,10 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
             "app.graph.nodes.marketing_agent.create_agent",
             _mock_create_agent(_canned_marketing_finding()),
         ),
-        patch("app.graph.nodes.synthesizer.create_agent", _mock_create_agent(canned_synthesis)),
+        patch(
+            "app.graph.nodes.synthesizer._get_synthesis_chain",
+            MagicMock(return_value=MagicMock(ainvoke=AsyncMock(return_value=canned_synthesis))),
+        ),
         patch("app.graph.nodes.reflection._llm_reflect", AsyncMock(return_value=canned_reflection)),
         patch(
             "app.graph.nodes.reflection._llm_propose_actions",
@@ -230,7 +229,6 @@ async def test_retry_path_targets_only_requested_domains() -> None:
             required_domains=["sales", "inventory", "marketing"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Needs diagnosis across domains.",
         ),
         "domain_findings": {},
@@ -239,7 +237,6 @@ async def test_retry_path_targets_only_requested_domains() -> None:
         "reflection_result": ReflectionResult(
             verdict="retry_with_domains",
             critique="Need only inventory refresh.",
-            confidence=0.6,
             domains_to_retry=["inventory"],
         ),
         "retry_count": 1,
@@ -279,7 +276,6 @@ async def test_retry_count_increments_on_reflection() -> None:
             required_domains=["sales"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Diagnosis.",
         ),
         "domain_findings": {},
@@ -319,7 +315,6 @@ async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
             required_domains=["sales"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Diagnosis.",
         ),
         "domain_findings": {},
@@ -329,7 +324,6 @@ async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
             verdict="retry_with_domains",
             critique="Would retry but hit limit.",
             domains_to_retry=["sales"],
-            confidence=0.6,
         ),
         "retry_count": edges.MAX_RETRIES,
         "proposed_actions": [],

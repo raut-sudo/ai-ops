@@ -12,6 +12,8 @@ def _utcnow() -> datetime:
 
 
 Domain = Literal["sales", "inventory", "marketing", "support"]
+DomainStatus = Literal["ok", "partial", "error"]
+SynthesisStatus = Literal["answered", "partial", "insufficient"]
 
 
 class IntentClassification(BaseModel):
@@ -29,7 +31,6 @@ class IntentClassification(BaseModel):
     required_domains: list[Domain]
     memory_needed: bool
     action_only: bool
-    confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
 
@@ -46,7 +47,7 @@ class DomainFinding(BaseModel):
     findings: list[str]
     metrics: list[MetricSnapshot]
     anomalies: list[str]
-    confidence: float = Field(ge=0.0, le=1.0)
+    status: DomainStatus = "partial"
     tool_calls_made: list[str]
     severity: Literal["low", "medium", "high", "critical"]
 
@@ -71,24 +72,21 @@ class RootCause(BaseModel):
     cause: str
     domain: str
     evidence: list[str]
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class SynthesisResult(BaseModel):
     correlated_explanation: str
     root_causes: list[RootCause] = Field(default_factory=list)
     contributing_factors: dict[str, Any] = Field(default_factory=dict)
-    confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    status: SynthesisStatus = "partial"
     recommendations: list[str] = Field(default_factory=list)
     domains_correlated: list[str] = Field(default_factory=list)
 
 
 class ReflectionResult(BaseModel):
-    verdict: Literal["pass", "retry_with_domains", "fail"]
+    verdict: Literal["pass", "retry_with_domains"]
     critique: str
-    confidence: float = Field(ge=0.0, le=1.0)
     domains_to_retry: list[Domain] = []
-    missing_information: list[str] = []
 
 
 class RestockParams(BaseModel):
@@ -136,6 +134,12 @@ class ActionProposal(BaseModel):
         return self.parameters.action_type
 
 
+class ActionProposalList(BaseModel):
+    """Wrapper for structured LLM output of action proposals."""
+
+    proposals: list[ActionProposal] = Field(default_factory=list)
+
+
 class HITLDecision(BaseModel):
     approved_action_ids: list[str]
     rejected_action_ids: list[str] = []
@@ -156,7 +160,7 @@ class FinalResponse(BaseModel):
     session_id: str
     query: str
     intent_type: str
-    status: Literal["success", "low_confidence", "hitl_pending", "error", "irrelevant"]
+    status: Literal["success", "hitl_pending", "error", "irrelevant"]
     summary: str
     root_causes: list[RootCause] = []
     domain_findings: dict[str, DomainFinding] = {}
@@ -164,8 +168,6 @@ class FinalResponse(BaseModel):
     recommendations: list[str] = []
     proposed_actions: list[ActionProposal] = []
     executed_actions: list[ActionResult] = []
-    confidence_score: float = 0.0
-    low_confidence_flag: bool = False
     thread_id: str
     langsmith_run_id: str | None = None
     otel_trace_id: str | None = None

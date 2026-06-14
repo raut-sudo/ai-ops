@@ -9,7 +9,9 @@ from app.config import settings
 
 
 def _client() -> AsyncQdrantClient:
-    return AsyncQdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
+    return AsyncQdrantClient(
+        host=settings.QDRANT_HOST, port=settings.QDRANT_PORT, check_compatibility=False
+    )
 
 
 async def qdrant_search(

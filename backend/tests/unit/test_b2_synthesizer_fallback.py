@@ -1,108 +1,122 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.graph.nodes.synthesizer import _deterministic_synthesis
-from app.schemas import DomainFinding, MemoryContext, SynthesisResult
+from app.graph.nodes.synthesizer import _findings_text, synthesizer_node
+from app.schemas import DomainFinding, SynthesisResult
 
 
-def make_finding(domain: str, anomaly: str | None = None) -> DomainFinding:
+def make_finding(domain: str, anomaly: str | None = None, status: str = "ok") -> DomainFinding:
     return DomainFinding(
         domain=domain,
         findings=[f"{domain} signal detected."],
         metrics=[],
         anomalies=[anomaly] if anomaly else [],
-        confidence=0.75,
+        status=status,
         tool_calls_made=[f"analyze_{domain}"],
         severity="high" if anomaly else "low",
     )
 
 
-class TestDeterministicSynthesis:
-    def test_empty_findings(self) -> None:
-        result = _deterministic_synthesis({}, None)
-        assert isinstance(result, SynthesisResult)
-        assert result.confidence_score == 0.5
-        assert result.root_causes == []
-        assert "No strong domain signals" in result.correlated_explanation
-
-    def test_inventory_stockout_root_cause(self) -> None:
-        findings = {"inventory": make_finding("inventory", "SKU-101 is out of stock.")}
-        result = _deterministic_synthesis(findings, None)
-        assert len(result.root_causes) == 1
-        assert result.root_causes[0].domain == "inventory"
-        assert "stockout" in result.root_causes[0].cause.lower()
-        assert any("Restock impacted SKU" in r for r in result.recommendations)
-
-    def test_marketing_paused_root_cause(self) -> None:
+class TestFindingsText:
+    def test_skips_error_status_findings(self) -> None:
         findings = {
-            "marketing": make_finding("marketing", "Paused campaign state may suppress demand.")
+            "inventory": make_finding("inventory", status="error"),
+            "sales": make_finding("sales", status="ok"),
         }
-        result = _deterministic_synthesis(findings, None)
-        assert len(result.root_causes) == 1
-        assert result.root_causes[0].domain == "marketing"
-        assert "paused" in result.root_causes[0].cause.lower()
-        assert any("Re-activate" in r for r in result.recommendations)
+        texts = _findings_text(findings)
+        assert not any("[inventory]" in t for t in texts)
+        assert any("[sales]" in t for t in texts)
 
-    def test_sales_contraction_root_cause(self) -> None:
-        findings = {"sales": make_finding("sales", "revenue declined 25% yesterday.")}
-        result = _deterministic_synthesis(findings, None)
-        assert len(result.root_causes) == 1
-        assert result.root_causes[0].domain == "sales"
+    def test_includes_ok_and_partial_findings(self) -> None:
+        findings = {
+            "marketing": make_finding("marketing", status="partial"),
+            "support": make_finding("support", status="ok"),
+        }
+        texts = _findings_text(findings)
+        assert any("[marketing]" in t for t in texts)
+        assert any("[support]" in t for t in texts)
 
-    def test_support_sentiment_root_cause(self) -> None:
-        findings = {"support": make_finding("support", "sentiment deterioration detected.")}
-        result = _deterministic_synthesis(findings, None)
-        assert len(result.root_causes) == 1
-        assert result.root_causes[0].domain == "support"
-        assert "sentiment" in result.root_causes[0].cause.lower()
+    def test_includes_anomalies(self) -> None:
+        findings = {"inventory": make_finding("inventory", "SKU-101 out of stock.", status="ok")}
+        texts = _findings_text(findings)
+        assert any("anomaly" in t and "SKU-101" in t for t in texts)
 
-    def test_memory_recommendations_when_no_root_causes(self) -> None:
-        memory = MemoryContext(
-            past_incidents=[],
-            recommended_actions_from_history=[
-                "Investigate supply chain.",
-                "Review campaign spend.",
-            ],
-            relevant_outcomes=[],
+
+class TestSynthesizerFallback:
+    @pytest.mark.asyncio
+    async def test_empty_findings_returns_insufficient(self) -> None:
+        result = await synthesizer_node({"domain_findings": {}, "query": "test"})
+        synth = result["synthesis"]
+        assert isinstance(synth, SynthesisResult)
+        assert synth.status == "insufficient"
+        assert synth.root_causes == []
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_returns_insufficient(self) -> None:
+        mock_chain = MagicMock()
+        mock_chain.ainvoke = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+
+        with patch("app.graph.nodes.synthesizer._get_synthesis_chain", return_value=mock_chain):
+            result = await synthesizer_node(
+                {
+                    "domain_findings": {"sales": make_finding("sales")},
+                    "query": "Why did sales drop?",
+                }
+            )
+
+        synth = result["synthesis"]
+        assert synth.status == "insufficient"
+
+    @pytest.mark.asyncio
+    async def test_error_status_findings_yield_insufficient(self) -> None:
+        """All-error findings should produce an insufficient synthesis."""
+        findings = {
+            "inventory": make_finding("inventory", status="error"),
+        }
+        result = await synthesizer_node({"domain_findings": findings, "query": "test"})
+        synth = result["synthesis"]
+        assert synth.status == "insufficient"
+
+    @pytest.mark.asyncio
+    async def test_multiple_domain_findings_produce_synthesis(self) -> None:
+        """Multiple ok findings with anomalies should produce a non-empty synthesis."""
+        mock_chain = MagicMock()
+        mock_chain.ainvoke = AsyncMock(
+            return_value=SynthesisResult(
+                correlated_explanation="Stockout and paused campaign are root causes.",
+                root_causes=[
+                    {
+                        "cause": "SKU-101 stockout",
+                        "domain": "inventory",
+                        "evidence": ["Out of stock"],
+                    },
+                    {
+                        "cause": "Paused campaign",
+                        "domain": "marketing",
+                        "evidence": ["Campaign paused"],
+                    },
+                ],
+                status="answered",
+            )
         )
-        result = _deterministic_synthesis({}, memory)
-        assert len(result.recommendations) == 2
-        assert "Investigate" in result.recommendations[0]
-
-    def test_lookup_path_returns_direct_answer(self) -> None:
-        findings = {"sales": make_finding("sales")}
-        result = _deterministic_synthesis(findings, None)
-        assert result.confidence_score == 0.85
-        assert "[sales]" in result.correlated_explanation
-        assert result.root_causes == []
-
-    def test_error_findings_filtered_out(self) -> None:
-        findings = {
-            "inventory": DomainFinding(
-                domain="inventory",
-                findings=["ReAct agent error; reflection will retry."],
-                metrics=[],
-                anomalies=[],
-                confidence=0.0,
-                tool_calls_made=[],
-                severity="low",
-            ),
-        }
-        result = _deterministic_synthesis(findings, None)
-        assert result.confidence_score == 0.5
-        assert "agent error" not in result.correlated_explanation.lower()
-
-    def test_confidence_averaged_across_root_causes(self) -> None:
-        findings = {
-            "inventory": make_finding("inventory", "SKU-101 is out of stock."),
-            "marketing": make_finding("marketing", "Paused campaign state may suppress demand."),
-        }
-        result = _deterministic_synthesis(findings, None)
-        assert result.confidence_score > 0.6
-        assert result.confidence_score <= 0.93
+        with patch("app.graph.nodes.synthesizer._get_synthesis_chain", return_value=mock_chain):
+            result = await synthesizer_node(
+                {
+                    "domain_findings": {
+                        "inventory": make_finding("inventory", "SKU-101 is out of stock."),
+                        "marketing": make_finding(
+                            "marketing", "Paused campaign state may suppress demand."
+                        ),
+                    },
+                    "query": "Why did sales drop?",
+                }
+            )
+        synth = result["synthesis"]
+        assert synth.status == "answered"
+        assert len(synth.root_causes) >= 1
 
 
 @pytest.mark.asyncio

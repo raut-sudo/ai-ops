@@ -24,8 +24,8 @@ async def test_graph_compiles():
     """Verify build_graph() compiles without errors."""
     graph = build_graph()
     assert graph is not None
-    # 9 nodes: orchestrator, 4 domain agents, memory_agent, synthesizer, reflection, response_composer
-    assert len(graph.nodes) == 9, f"Expected 9 nodes, got {len(graph.nodes)}"
+    # 10 nodes: orchestrator, 4 domain agents, memory_agent, synthesizer, reflection, action_executor, response_composer
+    assert len(graph.nodes) == 10, f"Expected 10 nodes, got {len(graph.nodes)}"
 
 
 @pytest.mark.asyncio
