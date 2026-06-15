@@ -15,6 +15,7 @@ def test_graph_nodes_match_blueprint_topology() -> None:
         "memory_agent",
         "synthesizer",
         "reflection",
+        "action_executor",
         "response_composer",
     }
 
@@ -32,6 +33,7 @@ def test_graph_unconditional_edges_match_blueprint() -> None:
         ("support_agent", "synthesizer"),
         ("memory_agent", "synthesizer"),
         ("synthesizer", "reflection"),
+        ("action_executor", "response_composer"),
         ("response_composer", "__end__"),
     }
 
@@ -42,7 +44,7 @@ def test_graph_conditional_branches_match_blueprint() -> None:
     graph = build_graph()
 
     expected_branch_nodes = {
-        "orchestrator": "route_after_orchestrator",
+        "orchestrator": "route_after_intent",
         "reflection": "route_after_reflection",
     }
 

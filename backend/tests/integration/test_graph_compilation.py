@@ -32,7 +32,7 @@ async def test_graph_compiles():
 async def test_graph_runs_irrelevant_intent_to_end():
     """Verify graph runs end-to-end for irrelevant intent (no checkpointer).
 
-    orchestrator returns irrelevant → response_composer → END
+    orchestrator returns irrelevant -> response_composer -> END
     LLM and DB calls are mocked so the test is deterministic.
     """
     irrelevant_intent = IntentClassification(
@@ -58,7 +58,7 @@ async def test_graph_runs_irrelevant_intent_to_end():
         "synthesis": None,
         "reflection_result": None,
         "retry_count": 0,
-        "proposed_actions": [],
+        "action_requests": [],
         "hitl_decision": None,
         "action_results": [],
         "final_response": None,
@@ -87,7 +87,7 @@ async def test_graph_runs_irrelevant_intent_to_end():
 async def test_graph_runs_irrelevant_second_query_to_end():
     """Verify graph runs end-to-end for a business query classified as irrelevant.
 
-    orchestrator mocked to return irrelevant → response_composer → END
+    orchestrator mocked to return irrelevant -> response_composer -> END
     LLM and DB calls are mocked so the test is deterministic.
     """
     irrelevant_intent = IntentClassification(
@@ -113,7 +113,7 @@ async def test_graph_runs_irrelevant_second_query_to_end():
         "synthesis": None,
         "reflection_result": None,
         "retry_count": 0,
-        "proposed_actions": [],
+        "action_requests": [],
         "hitl_decision": None,
         "action_results": [],
         "final_response": None,

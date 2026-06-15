@@ -10,6 +10,7 @@ def test_action_params_discriminator_dispatches_restock() -> None:
     proposal = ActionProposal.model_validate(
         {
             "target": "inventory:SKU-101",
+            "domain": "test",
             "parameters": {
                 "action_type": "restock_product",
                 "sku": "SKU-101",
@@ -28,6 +29,7 @@ def test_action_params_discriminator_dispatches_discount() -> None:
     proposal = ActionProposal.model_validate(
         {
             "target": "pricing:SKU-200",
+            "domain": "test",
             "parameters": {
                 "action_type": "apply_discount",
                 "sku": "SKU-200",
@@ -46,6 +48,7 @@ def test_action_type_is_derived_from_parameters() -> None:
     proposal = ActionProposal.model_validate(
         {
             "target": "inventory:SKU-999",
+            "domain": "test",
             "parameters": {
                 "action_type": "restock_product",
                 "sku": "SKU-999",
@@ -66,6 +69,7 @@ def test_invalid_discriminator_value_raises_validation_error() -> None:
         ActionProposal.model_validate(
             {
                 "target": "unknown",
+                "domain": "test",
                 "parameters": {
                     "action_type": "unknown_action",
                 },

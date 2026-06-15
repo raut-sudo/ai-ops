@@ -110,6 +110,7 @@ async def test_chat_stream_terminates_with_hitl_pending_when_proposals_exist(cli
     """§30.11 + §17.4: when graph pauses at HITL, stream must end with hitl_pending."""
     proposal = ActionProposal(
         action_id="action-aaa",
+        domain="inventory",
         target="SKU-101",
         parameters=RestockParams(sku="SKU-101", quantity=200),
         risk_level="low",
@@ -122,18 +123,18 @@ async def test_chat_stream_terminates_with_hitl_pending_when_proposals_exist(cli
     mock_snapshot.next = ("action_executor",)  # _is_awaiting_hitl checks for action_executor
     mock_snapshot.values = {
         "final_response": None,
-        "proposed_actions": [proposal],
+        "action_requests": [proposal],
     }
 
-    # Simulate reflection completing with proposals in output
-    reflection_event = {
+    # Simulate domain agent completing with action_requests in output
+    domain_event = {
         "event": "on_chain_end",
-        "name": "reflection",
-        "data": {"output": {"proposed_actions": [proposal]}},
+        "name": "inventory_agent",
+        "data": {"output": {"domain_findings": {}, "action_requests": [proposal]}},
     }
 
     mock_g = MagicMock()
-    mock_g.astream_events = MagicMock(return_value=_async_iter([reflection_event]))
+    mock_g.astream_events = MagicMock(return_value=_async_iter([domain_event]))
     mock_g.aget_state = AsyncMock(return_value=mock_snapshot)
 
     with (

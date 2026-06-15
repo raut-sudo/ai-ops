@@ -1,13 +1,12 @@
-"""Orchestrator Agent — agentic routing node.
+"""Orchestrator node - single-shot intent classification.
 
-Uses create_agent (LangChain v1) with two context-enrichment tools and a rich
-system prompt to classify user intent and route to the correct domain agents.
+Classifies the user query into a structured IntentClassification using a
+direct structured-output LLM call (no tools, no agent loop). The prompt
+embeds all routing rules and examples; the LLM just needs to pick the right
+intent_type and domains.
 
-Key differences from the old intent_classifier:
-  - Truly agentic: can call `recall_similar_incidents` and `get_related_policies`
-    before deciding routing, rather than doing a single-shot classification.
-  - No lazy imports or module-level LLM construction.
-  - Falls back to a safe broad-investigation intent on error (confidence=0.1).
+On failure, sets state["error"] and returns intent=None so route_after_intent
+short-circuits directly to response_composer.
 """
 
 from __future__ import annotations
@@ -15,42 +14,26 @@ from __future__ import annotations
 import asyncio
 
 import structlog
-from langchain.agents import create_agent
 from langchain_openai import AzureChatOpenAI
 
 from app.config import settings
 from app.graph.prompts import load_prompt
 from app.graph.state import AgentState
 from app.schemas import IntentClassification
-from app.tools.orchestrator import ORCHESTRATOR_TOOLS
 
 logger = structlog.get_logger(__name__)
 
 
-def _default_intent() -> IntentClassification:
-    """Safe fallback when the orchestrator agent itself fails.
-
-    Returns broad multi-domain investigation so no signals are missed.
-    The low confidence score signals to reflection that this is uncertain.
-    """
-    return IntentClassification(
-        intent_type="business_diagnosis",
-        required_domains=["sales", "inventory", "marketing", "support"],
-        memory_needed=True,
-        action_only=False,
-        reasoning="Orchestrator error — defaulting to broad investigation.",
-    )
-
-
 async def orchestrator_node(state: AgentState) -> dict:
-    """Classify user intent and route to the appropriate domain agents.
+    """Classify user intent with a single structured-output LLM call.
 
-    Uses create_agent with recall_similar_incidents and get_related_policies
-    tools so routing decisions can be grounded in historical context and
-    operational policy before committing to a classification.
+    No tool calls, no agent loop - just a system prompt + user query ->
+    IntentClassification. Fast, predictable, cheap.
+
+    On failure, sets state["error"] and returns intent=None so
+    route_after_intent short-circuits directly to response_composer.
     """
     query = state.get("query", "")
-    prior_messages = state.get("messages", [])
 
     try:
         llm = AzureChatOpenAI(
@@ -58,32 +41,21 @@ async def orchestrator_node(state: AgentState) -> dict:
             api_key=settings.AZURE_OPENAI_API_KEY,
             api_version=settings.AZURE_OPENAI_API_VERSION,
             azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI,
-            temperature=settings.AZURE_TEMPERATURE,
-        )
+            temperature=0.0,
+        ).with_structured_output(IntentClassification)
 
-        agent = create_agent(
-            llm,
-            tools=ORCHESTRATOR_TOOLS,
-            system_prompt=load_prompt("orchestrator"),
-            response_format=IntentClassification,
-        )
-
-        result = await asyncio.wait_for(
-            agent.ainvoke(
-                {
-                    "messages": [
-                        *prior_messages,
-                        {"role": "user", "content": query},
-                    ]
-                },
-                config={"recursion_limit": 10},
+        intent: IntentClassification = await asyncio.wait_for(
+            llm.ainvoke(
+                [
+                    {"role": "system", "content": load_prompt("orchestrator")},
+                    {"role": "user", "content": query},
+                ]
             ),
-            timeout=30.0,
+            timeout=20.0,
         )
 
-        intent: IntentClassification = result["structured_response"]
         if intent is None:
-            raise ValueError("structured_response was None")
+            raise ValueError("LLM returned None for IntentClassification")
 
         logger.info(
             "orchestrator_classified",
@@ -91,12 +63,20 @@ async def orchestrator_node(state: AgentState) -> dict:
             domains=intent.required_domains,
             action_only=intent.action_only,
         )
+        return {
+            "intent": intent,
+            "retry_count": 0,
+        }
 
     except Exception as exc:
-        logger.warning("orchestrator_error", error=str(exc), exc_info=True)
-        intent = _default_intent()
-
-    return {
-        "intent": intent,
-        "retry_count": 0,
-    }
+        logger.error(
+            "orchestrator_failed",
+            error=str(exc),
+            query=query[:120],
+            exc_info=True,
+        )
+        return {
+            "intent": None,
+            "retry_count": 0,
+            "error": f"Orchestrator LLM failure: {exc}",
+        }

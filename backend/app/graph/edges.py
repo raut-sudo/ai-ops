@@ -72,24 +72,23 @@ def route_after_intent(state: AgentState) -> str | list[Send]:
     """Route after intent classification (orchestrator).
 
     Cases:
+    - intent is None (orchestrator failed) → response_composer (error already set in state)
     - irrelevant → response_composer (skip investigation)
     - memory_recall → memory_agent (skip domain agents)
     - action_only → reflection (skip domain analysis; reflection proposes directly)
     - others → fan_out (parallel domain investigation)
     """
-    intent = state["intent"]
+    intent = state.get("intent")
+
+    # Orchestrator LLM failure — error is already set in state["error"]
+    if intent is None:
+        return "response_composer"
 
     if intent.intent_type == "irrelevant":
         return "response_composer"
 
     if intent.intent_type == "memory_recall":
         return "memory_agent"
-
-    # action_only: user explicitly requested an action — no domain diagnosis needed.
-    # Route directly to reflection so it can propose the action and trigger HITL.
-    # Check both the boolean flag and the intent_type literal for robustness.
-    if intent.action_only or intent.intent_type == "direct_action":
-        return "reflection"
 
     # No domains + no memory needed → response_composer (safe fallback)
     if not intent.required_domains and not intent.memory_needed:
@@ -102,8 +101,8 @@ def route_after_reflection(state: AgentState) -> str | list[Send]:
     """Route after reflection.
 
     - retry_with_domains + retries remain → targeted fan_out (loop back)
-    - pass with proposed_actions → action_executor (HITL will be triggered)
-    - pass without proposals → response_composer (done)
+    - pass with action_requests → action_executor (HITL will be triggered)
+    - pass without action_requests → response_composer (done)
     """
     result = state["reflection_result"]
     retry_count = state.get("retry_count", 0)
@@ -116,9 +115,9 @@ def route_after_reflection(state: AgentState) -> str | list[Send]:
         if targets:
             return _fan_out(state, domains=targets)
 
-    # Pass path: if proposals were generated, route to action_executor for HITL
-    proposed_actions = state.get("proposed_actions") or []
-    if result.verdict == "pass" and proposed_actions:
+    # Pass path: if domain agents raised action requests, route to action_executor for HITL
+    action_requests = state.get("action_requests") or []
+    if result.verdict == "pass" and action_requests:
         return "action_executor"
 
     # Default: no actions needed, go to response_composer

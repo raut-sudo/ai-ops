@@ -64,7 +64,7 @@ async def _persist_incident(state: AgentState) -> None:
     incident_id = state.get("session_id", str(uuid.uuid4()))
     summary = synth.correlated_explanation
     causes = [rc.cause for rc in synth.root_causes]
-    actions_taken = [p.action_id for p in state.get("proposed_actions") or []]
+    actions_taken = [p.action_id for p in state.get("action_requests") or []]
     results = state.get("action_results") or []
     executed = [r.action_id for r in results if r.status == "executed"]
     outcome = (
@@ -137,7 +137,7 @@ def _build_composer_context(state: AgentState) -> str:
     synthesis = state.get("synthesis")
     intent = state.get("intent")
     action_results = state.get("action_results") or []
-    proposed_actions = state.get("proposed_actions") or []
+    action_requests = state.get("action_requests") or []
     memory_context = state.get("memory_context")
 
     parts = [f"User query: {state.get('query', '')}"]
@@ -152,8 +152,8 @@ def _build_composer_context(state: AgentState) -> str:
         if synthesis.recommendations:
             parts.append("Recommendations: " + "; ".join(synthesis.recommendations))
 
-    if proposed_actions:
-        parts.append(f"\nProposed actions: {len(proposed_actions)}")
+    if action_requests:
+        parts.append(f"\nPending action requests: {len(action_requests)}")
     if action_results:
         executed = [r for r in action_results if r.status == "executed"]
         parts.append(f"Executed actions: {len(executed)} of {len(action_results)}")
@@ -173,30 +173,36 @@ async def _compose_summary(state: AgentState) -> str:
     """
     synthesis = state.get("synthesis")
     intent = state.get("intent")
+    error = state.get("error")
+
+    # Orchestrator LLM failure — no intent was classified
+    if intent is None:
+        detail = error or "The request could not be processed."
+        return f"Sorry, I was unable to understand your request. {detail}"
 
     # For irrelevant / memory_recall intents, skip LLM and use deterministic text
-    if intent and intent.intent_type == "irrelevant":
+    if intent.intent_type == "irrelevant":
         return "Query is not relevant to e-commerce operations."
-    if intent and intent.intent_type == "memory_recall":
+    if intent.intent_type == "memory_recall":
         mc = state.get("memory_context")
         if mc and mc.past_incidents:
             return f"Found {len(mc.past_incidents)} relevant past incident(s)."
         return "No relevant past incidents found."
 
-    # For direct_action: build a plain-language summary from the executed action results
-    if intent and (intent.action_only or intent.intent_type == "direct_action"):
+    # For direct_action / action_only: build plain-language summary from executed action results
+    if intent.action_only or intent.intent_type == "direct_action":
         action_results = state.get("action_results") or []
-        proposed_actions = state.get("proposed_actions") or []
-        proposal_map = {p.action_id: p for p in proposed_actions}
+        action_requests = state.get("action_requests") or []
+        request_map = {r.action_id: r for r in action_requests}
         lines = []
         for r in action_results:
-            proposal = proposal_map.get(r.action_id)
-            label = f"{proposal.action_type} on {proposal.target}" if proposal else r.action_id
+            req = request_map.get(r.action_id)
+            label = f"{req.action_type} on {req.target}" if req else r.action_id
             if r.status == "executed":
                 lines.append(f"Action completed: {label}.")
                 if r.result_payload:
-                    detail = ", ".join(f"{k}={v}" for k, v in r.result_payload.items())
-                    lines.append(f"Result: {detail}.")
+                    payload_str = ", ".join(f"{k}={v}" for k, v in r.result_payload.items())
+                    lines.append(f"Result: {payload_str}.")
             elif r.status == "skipped":
                 reason = (r.result_payload or {}).get("reason", "skipped")
                 lines.append(f"Action skipped: {label} ({reason}).")
@@ -251,7 +257,7 @@ async def response_composer_node(state: AgentState) -> dict:
     synthesis = state.get("synthesis")
     intent = state.get("intent")
     action_results = state.get("action_results") or []
-    proposed_actions = state.get("proposed_actions") or []
+    action_requests = state.get("action_requests") or []
 
     # Status: derive from synthesis.status or error/irrelevant special cases
     if state.get("error"):
@@ -276,7 +282,7 @@ async def response_composer_node(state: AgentState) -> dict:
         domain_findings=state.get("domain_findings") or {},
         memory_context=state.get("memory_context"),
         recommendations=synthesis.recommendations if synthesis else [],
-        proposed_actions=proposed_actions,
+        proposed_actions=action_requests,
         executed_actions=action_results,
         thread_id=state["thread_id"],
         otel_trace_id=state.get("otel_trace_id", ""),

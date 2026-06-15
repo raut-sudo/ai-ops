@@ -27,6 +27,13 @@ _TOOL_NAMES = {
     "get_top_products",
     "get_declining_products",
     "get_sales_distribution",
+    # new
+    "get_sales_by_sku",
+    "get_customer_segment_breakdown",
+    "get_orders_by_status",
+    "get_campaign_revenue_attribution",
+    "get_hourly_sales_trend",
+    "get_product_details",
 }
 
 

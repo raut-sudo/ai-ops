@@ -1,10 +1,31 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from app.graph.nodes.reflection import reflection_node
 from app.graph.state import AgentState
-from app.schemas import DomainFinding, IntentClassification, RootCause, SynthesisResult
+from app.schemas import (
+    DomainFinding,
+    IntentClassification,
+    ReflectionResult,
+    RootCause,
+    SynthesisResult,
+)
+
+
+def _mock_agent(verdict: str, domains: list[str] | None = None):
+    """Return a mock agent whose ainvoke resolves to the given verdict."""
+    mock = AsyncMock()
+    mock.ainvoke.return_value = {
+        "structured_response": ReflectionResult(
+            verdict=verdict,
+            critique="mocked",
+            domains_to_retry=domains or [],
+        )
+    }
+    return mock
 
 
 @pytest.mark.asyncio
@@ -31,7 +52,8 @@ async def test_lookup_result_passes_without_retry() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch("app.graph.nodes.reflection.create_agent", return_value=_mock_agent("pass")):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "pass"
 
@@ -60,7 +82,8 @@ async def test_non_diagnostic_intent_passes_directly() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch("app.graph.nodes.reflection.create_agent", return_value=_mock_agent("pass")):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "pass"
 
@@ -99,7 +122,11 @@ async def test_low_confidence_without_root_causes_still_retries() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch(
+        "app.graph.nodes.reflection.create_agent",
+        return_value=_mock_agent("retry_with_domains", ["sales"]),
+    ):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "retry_with_domains"
 
@@ -128,6 +155,7 @@ async def test_diagnostic_with_root_causes_passes() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch("app.graph.nodes.reflection.create_agent", return_value=_mock_agent("pass")):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "pass"

@@ -1,6 +1,6 @@
 """Integration tests for the Sprint 5 diagnostic pipeline.
 
-§24.1 mandate: LLM calls are **mocked** — canned DomainFinding objects are
+Â§24.1 mandate: LLM calls are **mocked** â€” canned DomainFinding objects are
 injected directly into domain_findings so tests are deterministic and require
 no live Azure OpenAI credentials.
 """
@@ -14,12 +14,10 @@ import pytest
 
 from app.graph.graph import build_graph
 from app.schemas import (
-    ActionProposal,
     DomainFinding,
     IntentClassification,
     MetricSnapshot,
     ReflectionResult,
-    RestockParams,
     RootCause,
     SynthesisResult,
 )
@@ -27,7 +25,7 @@ from app.schemas import (
 pytestmark = pytest.mark.usefixtures("ensure_seed_data")
 
 
-# ── Canned DomainFindings (LLM mock — deterministic) ────────────────────────
+# â”€â”€ Canned DomainFindings (LLM mock â€” deterministic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _canned_inventory_finding() -> DomainFinding:
@@ -76,7 +74,7 @@ def _canned_sales_finding() -> DomainFinding:
     )
 
 
-# ── Mock builder ───────────────────────────────────────────────
+# â”€â”€ Mock builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _mock_create_agent(structured_response) -> MagicMock:
@@ -88,14 +86,14 @@ def _mock_create_agent(structured_response) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
-    """Blueprint §24.1 / §13.4 Exit Criteria:
+    """Blueprint Â§24.1 / Â§13.4 Exit Criteria:
 
     - Diagnosis reaches reflection.
-    - Synthesis contains ≥2 root causes: stockout (inventory) + paused campaign (marketing).
+    - Synthesis contains â‰¥2 root causes: stockout (inventory) + paused campaign (marketing).
     - reflection_result.verdict == 'pass'.
     - proposed_actions populated (proves reflection generated action proposals).
 
-    All LLM calls are mocked via create_agent patches — no Azure OpenAI credentials needed.
+    All LLM calls are mocked via create_agent patches â€” no Azure OpenAI credentials needed.
     interrupt() is mocked to reject all proposals so the graph continues to
     response_composer without a checkpointer.
     """
@@ -138,17 +136,6 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
         critique="Root causes confirmed across two domains.",
     )
 
-    canned_proposals = [
-        ActionProposal(
-            action_id="diag-test-restock-sku101",
-            target="SKU-101",
-            parameters=RestockParams(sku="SKU-101", quantity=200),
-            risk_level="low",
-            justification="SKU-101 is out of stock",
-            estimated_impact="Restore stock and recover revenue.",
-        )
-    ]
-
     initial_state = {
         "messages": [],
         "query": "Why did sales drop yesterday for SKU-101?",
@@ -160,7 +147,7 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
         "synthesis": None,
         "reflection_result": None,
         "retry_count": 0,
-        "proposed_actions": [],
+        "action_requests": [],
         "hitl_decision": None,
         "action_results": [],
         "final_response": None,
@@ -187,19 +174,13 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
             "app.graph.nodes.synthesizer._get_synthesis_chain",
             MagicMock(return_value=MagicMock(ainvoke=AsyncMock(return_value=canned_synthesis))),
         ),
-        patch("app.graph.nodes.reflection._llm_reflect", AsyncMock(return_value=canned_reflection)),
         patch(
-            "app.graph.nodes.reflection._llm_propose_actions",
-            AsyncMock(return_value=canned_proposals),
-        ),
-        patch("app.graph.nodes.reflection._persist_proposed_actions", AsyncMock()),
-        patch(
-            "app.graph.nodes.reflection.interrupt",
-            return_value={
-                "approved_action_ids": [],
-                "rejected_action_ids": ["diag-test-restock-sku101"],
-                "approver": "test-auto-reject",
-            },
+            "app.graph.nodes.reflection.create_agent",
+            MagicMock(
+                return_value=MagicMock(
+                    ainvoke=AsyncMock(return_value={"structured_response": canned_reflection})
+                )
+            ),
         ),
         patch(
             "app.graph.nodes.response_composer._compose_summary",
@@ -210,7 +191,7 @@ async def test_golden_trace_reaches_reflection_with_two_root_causes() -> None:
         await graph.ainvoke(initial_state)
 
 
-# ── Retry-path tests (pure edge/node logic, no LLM) ─────────────────────────
+# â”€â”€ Retry-path tests (pure edge/node logic, no LLM) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @pytest.mark.asyncio
@@ -240,7 +221,7 @@ async def test_retry_path_targets_only_requested_domains() -> None:
             domains_to_retry=["inventory"],
         ),
         "retry_count": 1,
-        "proposed_actions": [],
+        "action_requests": [],
         "hitl_decision": None,
         "action_results": [],
         "final_response": None,
@@ -262,7 +243,7 @@ async def test_retry_path_targets_only_requested_domains() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_count_increments_on_reflection() -> None:
-    """reflection_node always increments retry_count (§9.1, §30.5)."""
+    """reflection_node always increments retry_count (Â§9.1, Â§30.5)."""
     from app.graph.nodes.reflection import reflection_node
 
     state = {
@@ -283,7 +264,7 @@ async def test_retry_count_increments_on_reflection() -> None:
         "synthesis": None,
         "reflection_result": None,
         "retry_count": 1,
-        "proposed_actions": [],
+        "action_requests": [],
         "hitl_decision": None,
         "action_results": [],
         "final_response": None,
@@ -326,7 +307,7 @@ async def test_retry_capped_at_max_retries_routes_to_assemble() -> None:
             domains_to_retry=["sales"],
         ),
         "retry_count": edges.MAX_RETRIES,
-        "proposed_actions": [],
+        "action_requests": [],
         "hitl_decision": None,
         "action_results": [],
         "final_response": None,

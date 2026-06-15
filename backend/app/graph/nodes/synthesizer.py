@@ -107,6 +107,7 @@ async def synthesizer_node(state: dict) -> dict:
 
     findings = state.get("domain_findings", {}) or {}
     query = state.get("query", "")
+    action_requests = state.get("action_requests", []) or []
 
     if not findings:
         logger.warning("synthesizer_no_findings", query=query)
@@ -119,6 +120,7 @@ async def synthesizer_node(state: dict) -> dict:
                 status="insufficient",
                 recommendations=[],
                 domains_correlated=[],
+                recommended_actions=action_requests,
             )
         }
 
@@ -133,7 +135,10 @@ async def synthesizer_node(state: dict) -> dict:
             }
         )
 
-        logger.info("synthesizer_llm_success")
+        # Pass through action requests raised by domain agents
+        result.recommended_actions = action_requests
+
+        logger.info("synthesizer_llm_success", action_requests=len(action_requests))
 
         return {
             "synthesis": result,
@@ -154,5 +159,6 @@ async def synthesizer_node(state: dict) -> dict:
                 status="insufficient",
                 recommendations=[],
                 domains_correlated=list(findings.keys()),
+                recommended_actions=action_requests,
             )
         }

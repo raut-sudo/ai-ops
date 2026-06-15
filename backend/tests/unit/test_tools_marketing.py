@@ -26,7 +26,9 @@ async def test_get_active_campaigns_for_seed_sku() -> None:
     rows = await get_active_campaigns_for_sku("SKU-101")
 
     assert len(rows) >= 1
-    assert any(row["name"] == "Summer Sale" for row in rows)
+    assert any(row["name"] == "TikTok Influencer" for row in rows)
+    # "Summer Sale" is paused in seed data — must NOT appear in active-only results
+    assert all(row["status"] == "active" for row in rows)
 
 
 @pytest.mark.asyncio

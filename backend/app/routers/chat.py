@@ -80,7 +80,7 @@ async def _event_generator(
 
     Guarantees exactly one terminal event (hitl_pending | final | error).
     """
-    proposed_actions_snapshot: list = []
+    action_requests_snapshot: list = []
 
     try:
         async for event in graph.astream_events(initial_state, config, version="v2"):
@@ -112,6 +112,10 @@ async def _event_generator(
                             "finding": payload,
                         }
                     )
+                # Accumulate action_requests from domain agents
+                reqs = output.get("action_requests") or []
+                if reqs:
+                    action_requests_snapshot.extend(reqs)
 
             # ── synthesis ───────────────────────────────────────────────────
             elif kind == "on_chain_end" and name == "synthesizer":
@@ -122,13 +126,6 @@ async def _event_generator(
                         synthesis.model_dump() if hasattr(synthesis, "model_dump") else synthesis
                     )
                     yield _ndjson({"type": "synthesis", "synthesis": payload})
-
-            # ── capture proposed_actions for hitl_pending terminal event ────
-            elif kind == "on_chain_end" and name in ("reflection", "action_executor"):
-                output = event.get("data", {}).get("output") or {}
-                proposed_actions_snapshot = (
-                    output.get("proposed_actions") or proposed_actions_snapshot
-                )
 
     except Exception as exc:
         log.exception("chat.stream.error", thread_id=thread_id, error=str(exc))
@@ -147,16 +144,16 @@ async def _event_generator(
         # Terminal: graph is paused inside action_executor (HITL via interrupt()) — emit hitl_pending.
         # Serialize action_type explicitly because it is a @property.
         actions_payload = []
-        for p in proposed_actions_snapshot:
-            if hasattr(p, "model_dump"):
-                d = p.model_dump()
-                d["action_type"] = p.action_type
+        for r in action_requests_snapshot:
+            if hasattr(r, "model_dump"):
+                d = r.model_dump()
+                d["action_type"] = r.action_type
                 actions_payload.append(d)
             else:
-                actions_payload.append(p)
+                actions_payload.append(r)
 
         # When interrupt() fires the action_executor node never emits on_chain_end, so
-        # proposed_actions_snapshot may be empty.  Fall back to the interrupt payload
+        # action_requests_snapshot may be empty.  Fall back to the interrupt payload
         # that LangGraph checkpointed in snapshot.tasks[*].interrupts.
         if not actions_payload:
             for task in getattr(snapshot, "tasks", ()) or ():
@@ -233,8 +230,8 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     # messages only contains the new HumanMessage; the add_messages reducer
     # will merge this with the persisted history from the checkpoint.
     # NOTE: Only include fields that should be set fresh per-turn.
-    # Do NOT include retry_count, proposed_actions, action_results, or
-    # domain_findings — these either use reducers (domain_findings) or should
+    # Do NOT include retry_count, action_requests, action_results, or
+    # domain_findings — these either use reducers or should
     # persist across the graph run from their default/checkpoint values.
     initial_state: dict = {
         "session_id": thread_id,

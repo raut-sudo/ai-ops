@@ -213,3 +213,185 @@ async def _get_unpromoted_top_products_impl(
 async def get_unpromoted_top_products(period: str, limit: int = 10) -> list[dict]:
     async with get_session() as session:
         return await _get_unpromoted_top_products_impl(session, period, limit=limit)
+
+
+async def get_campaign_performance(period: str) -> list[dict]:
+    """Public wrapper around _get_campaign_performance_impl."""
+    async with get_session() as session:
+        return await _get_campaign_performance_impl(session, period)
+
+
+async def get_active_campaigns_for_sku(sku: str) -> list[dict]:
+    """Return only active (non-paused) campaigns targeting the given SKU."""
+    rows = await get_campaigns_for_sku(sku)
+    return [r for r in rows if r["status"] == "active"]
+
+
+@tool_retry
+async def _get_campaign_by_channel_impl(session: AsyncSession, period: str) -> list[dict]:
+    start, end = resolve_period(period)
+    sql = text(
+        """
+        SELECT c.channel,
+               COUNT(DISTINCT c.id)                              AS campaign_count,
+               COALESCE(SUM(m.impressions), 0)                  AS impressions,
+               COALESCE(SUM(m.clicks), 0)                       AS clicks,
+               COALESCE(SUM(m.conversions), 0)                  AS conversions,
+               COALESCE(SUM(m.spend), 0)                        AS spend,
+               COALESCE(SUM(m.attributed_revenue), 0)           AS attributed_revenue,
+               CASE WHEN COALESCE(SUM(m.spend), 0) > 0
+                    THEN ROUND(COALESCE(SUM(m.attributed_revenue), 0) / SUM(m.spend), 4)
+                    ELSE 0
+               END AS roas
+        FROM campaigns c
+        JOIN campaign_metrics_daily m ON m.campaign_id = c.id
+        WHERE m.metric_date >= :start
+          AND m.metric_date < :end
+        GROUP BY c.channel
+        ORDER BY roas DESC
+        """
+    )
+    rows = (await session.execute(sql, {"start": start, "end": end})).all()
+    return [
+        {
+            "channel": row.channel,
+            "campaign_count": int(row.campaign_count),
+            "impressions": int(row.impressions),
+            "clicks": int(row.clicks),
+            "conversions": int(row.conversions),
+            "spend": float(row.spend),
+            "attributed_revenue": float(row.attributed_revenue),
+            "roas": float(row.roas),
+        }
+        for row in rows
+    ]
+
+
+async def get_campaign_by_channel(period: str) -> list[dict]:
+    """Return aggregated campaign metrics (spend, revenue, ROAS) grouped by channel."""
+    async with get_session() as session:
+        return await _get_campaign_by_channel_impl(session, period)
+
+
+@tool_retry
+async def _get_campaigns_near_budget_exhaustion_impl(
+    session: AsyncSession, pct_threshold: float
+) -> list[dict]:
+    sql = text(
+        """
+        SELECT id::text AS campaign_id, name, channel, status,
+               budget_total, budget_spent, ends_at,
+               ROUND(budget_spent / NULLIF(budget_total, 0) * 100, 1) AS pct_spent
+        FROM campaigns
+        WHERE status = 'active'
+          AND budget_total > 0
+          AND (budget_spent / budget_total * 100) >= :threshold
+        ORDER BY pct_spent DESC
+        """
+    )
+    rows = (await session.execute(sql, {"threshold": pct_threshold})).all()
+    return [
+        {
+            "campaign_id": row.campaign_id,
+            "name": row.name,
+            "channel": row.channel,
+            "budget_total": float(row.budget_total),
+            "budget_spent": float(row.budget_spent),
+            "pct_spent": float(row.pct_spent),
+            "ends_at": row.ends_at,
+        }
+        for row in rows
+    ]
+
+
+async def get_campaigns_near_budget_exhaustion(pct_threshold: float = 90.0) -> list[dict]:
+    """Return active campaigns that have spent >= pct_threshold% of their total budget."""
+    async with get_session() as session:
+        return await _get_campaigns_near_budget_exhaustion_impl(session, pct_threshold)
+
+
+@tool_retry
+async def _get_campaign_daily_trend_impl(
+    session: AsyncSession, campaign_id: str, period: str
+) -> list[dict]:
+    start, end = resolve_period(period)
+    sql = text(
+        """
+        SELECT metric_date,
+               impressions, clicks, conversions,
+               spend, attributed_revenue,
+               CASE WHEN spend > 0
+                    THEN ROUND(attributed_revenue / spend, 4)
+                    ELSE 0
+               END AS roas
+        FROM campaign_metrics_daily
+        WHERE campaign_id = :campaign_id
+          AND metric_date >= :start
+          AND metric_date < :end
+        ORDER BY metric_date
+        """
+    )
+    rows = (
+        await session.execute(sql, {"campaign_id": campaign_id, "start": start, "end": end})
+    ).all()
+    return [
+        {
+            "date": str(row.metric_date),
+            "impressions": int(row.impressions),
+            "clicks": int(row.clicks),
+            "conversions": int(row.conversions),
+            "spend": float(row.spend),
+            "attributed_revenue": float(row.attributed_revenue),
+            "roas": float(row.roas),
+        }
+        for row in rows
+    ]
+
+
+async def get_campaign_daily_trend(campaign_id: str, period: str) -> list[dict]:
+    """Return day-by-day metrics for a specific campaign — spot acceleration or deceleration."""
+    async with get_session() as session:
+        return await _get_campaign_daily_trend_impl(session, campaign_id, period)
+
+
+@tool_retry
+async def _get_discount_impact_impl(session: AsyncSession, period: str) -> dict:
+    start, end = resolve_period(period)
+    sql = text(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE campaign_id IS NOT NULL)                          AS promoted_orders,
+            COUNT(*) FILTER (WHERE campaign_id IS NULL)                              AS organic_orders,
+            COALESCE(SUM(total_amount)    FILTER (WHERE campaign_id IS NOT NULL), 0) AS promoted_revenue,
+            COALESCE(SUM(total_amount)    FILTER (WHERE campaign_id IS NULL), 0)     AS organic_revenue,
+            COALESCE(SUM(discount_amount), 0)                                        AS total_discount_given,
+            COALESCE(SUM(discount_amount) FILTER (WHERE campaign_id IS NOT NULL), 0) AS campaign_discount_given
+        FROM orders
+        WHERE placed_at >= :start
+          AND placed_at < :end
+          AND status NOT IN ('cancelled')
+        """
+    )
+    row = (await session.execute(sql, {"start": start, "end": end})).one()
+    promoted_revenue = float(row.promoted_revenue)
+    organic_revenue = float(row.organic_revenue)
+    total_revenue = promoted_revenue + organic_revenue
+    return {
+        "period": period,
+        "promoted_orders": int(row.promoted_orders),
+        "organic_orders": int(row.organic_orders),
+        "promoted_revenue": promoted_revenue,
+        "organic_revenue": organic_revenue,
+        "total_revenue": total_revenue,
+        "promoted_share_pct": round(promoted_revenue / total_revenue * 100, 2)
+        if total_revenue > 0
+        else 0.0,
+        "total_discount_given": float(row.total_discount_given),
+        "campaign_discount_given": float(row.campaign_discount_given),
+    }
+
+
+async def get_discount_impact(period: str) -> dict:
+    """Return revenue split (campaign-promoted vs organic) plus total discounts given."""
+    async with get_session() as session:
+        return await _get_discount_impact_impl(session, period)

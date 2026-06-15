@@ -1,6 +1,6 @@
 """Unit tests for routing edges.
 
-Per BLUEPRINT §24.1: edge tests build AgentState by hand and never depend on
+Per BLUEPRINT Â§24.1: edge tests build AgentState by hand and never depend on
 stub returns. This tests routing logic independently of node behavior.
 """
 
@@ -36,7 +36,7 @@ def _base_state() -> dict:
         "synthesis": None,
         "reflection_result": None,
         "retry_count": 0,
-        "proposed_actions": [],
+        "action_requests": [],
         "hitl_decision": None,
         "action_results": [],
         "final_response": None,
@@ -51,7 +51,7 @@ class TestRouteAfterIntent:
     """Test routing immediately after orchestrator classification."""
 
     def test_irrelevant_intent_goes_to_aggregator(self):
-        """Irrelevant intent → response_composer (skip investigation)."""
+        """Irrelevant intent -> response_composer (skip investigation)."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="irrelevant",
@@ -65,7 +65,7 @@ class TestRouteAfterIntent:
         assert result == "response_composer"
 
     def test_memory_recall_goes_to_memory_retrieve(self):
-        """Memory recall intent → memory_agent (skip domain agents)."""
+        """Memory recall intent -> memory_agent (skip domain agents)."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="memory_recall",
@@ -79,7 +79,7 @@ class TestRouteAfterIntent:
         assert result == "memory_agent"
 
     def test_business_diagnosis_fans_out_to_domains(self):
-        """Business diagnosis with required_domains → fan_out (parallel)."""
+        """Business diagnosis with required_domains -> fan_out (parallel)."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="business_diagnosis",
@@ -99,7 +99,7 @@ class TestRouteAfterIntent:
         assert "memory_agent" in node_names  # First pass, memory_needed=True
 
     def test_fan_out_excludes_memory_on_retry(self):
-        """memory_needed=True but retry_count > 0 → memory_agent not sent."""
+        """memory_needed=True but retry_count > 0 -> memory_agent not sent."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="business_diagnosis",
@@ -118,7 +118,7 @@ class TestRouteAfterIntent:
         assert "memory_agent" not in node_names  # Skipped on retry
 
     def test_no_domains_no_memory_goes_to_aggregator(self):
-        """No domains + no memory → response_composer (safe fallback)."""
+        """No domains + no memory -> response_composer (safe fallback)."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="reporting",
@@ -136,7 +136,7 @@ class TestRouteAfterReflection:
     """Test routing after reflection (retry decision point)."""
 
     def test_retry_with_domains_below_max_retries(self):
-        """verdict=retry_with_domains, retry_count <= MAX → fan_out (targeted)."""
+        """verdict=retry_with_domains, retry_count <= MAX -> fan_out (targeted)."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="business_diagnosis",
@@ -160,7 +160,7 @@ class TestRouteAfterReflection:
         assert "sales_agent" not in node_names  # Targeted retry
 
     def test_retry_at_max_retries_goes_to_aggregator(self):
-        """retry_with_domains but retry_count > MAX_RETRIES → response_composer."""
+        """retry_with_domains but retry_count > MAX_RETRIES -> response_composer."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="business_diagnosis",
@@ -180,7 +180,7 @@ class TestRouteAfterReflection:
         assert result == "response_composer"
 
     def test_pass_verdict_goes_to_aggregator(self):
-        """pass verdict with no proposed_actions → response_composer."""
+        """pass verdict with no proposed_actions -> response_composer."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="business_diagnosis",
@@ -213,7 +213,7 @@ class TestRouteAfterReflection:
         assert result == "response_composer"
 
     def test_pass_no_root_causes_goes_to_aggregator(self):
-        """pass verdict with no root causes (lookup result) → response_composer."""
+        """pass verdict with no root causes (lookup result) -> response_composer."""
         state = _base_state()
         state["intent"] = IntentClassification(
             intent_type="reporting",

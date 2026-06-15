@@ -81,6 +81,7 @@ class SynthesisResult(BaseModel):
     status: SynthesisStatus = "partial"
     recommendations: list[str] = Field(default_factory=list)
     domains_correlated: list[str] = Field(default_factory=list)
+    recommended_actions: list[ActionRequest] = Field(default_factory=list)
 
 
 class ReflectionResult(BaseModel):
@@ -121,8 +122,11 @@ class AlertParams(BaseModel):
 ActionParams = RestockParams | DiscountParams | CampaignParams | TicketParams | AlertParams
 
 
-class ActionProposal(BaseModel):
+class ActionRequest(BaseModel):
+    """An action requested by a domain agent. Not yet executed — awaits HITL approval."""
+
     action_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    domain: str  # which domain agent raised this request
     target: str
     parameters: ActionParams = Field(discriminator="action_type")
     risk_level: Literal["low", "medium", "high"]
@@ -134,10 +138,21 @@ class ActionProposal(BaseModel):
         return self.parameters.action_type
 
 
-class ActionProposalList(BaseModel):
-    """Wrapper for structured LLM output of action proposals."""
+# Keep ActionProposal as an alias so existing executor / DB code still compiles
+ActionProposal = ActionRequest
 
-    proposals: list[ActionProposal] = Field(default_factory=list)
+
+class ActionRequestList(BaseModel):
+    """Wrapper for structured LLM output — not used post-refactor but kept for tests."""
+
+    requests: list[ActionRequest] = Field(default_factory=list)
+
+
+# Legacy alias
+ActionProposalList = ActionRequestList
+
+# Resolve forward reference: SynthesisResult.recommended_actions uses "ActionRequest"
+SynthesisResult.model_rebuild()
 
 
 class HITLDecision(BaseModel):
@@ -166,7 +181,7 @@ class FinalResponse(BaseModel):
     domain_findings: dict[str, DomainFinding] = {}
     memory_context: MemoryContext | None = None
     recommendations: list[str] = []
-    proposed_actions: list[ActionProposal] = []
+    proposed_actions: list[ActionRequest] = []
     executed_actions: list[ActionResult] = []
     thread_id: str
     langsmith_run_id: str | None = None
@@ -201,7 +216,10 @@ class ApproveRequest(BaseModel):
 
 __all__ = [
     "ActionParams",
-    "ActionProposal",
+    "ActionProposal",  # legacy alias → ActionRequest
+    "ActionProposalList",  # legacy alias → ActionRequestList
+    "ActionRequest",
+    "ActionRequestList",
     "ActionResult",
     "AlertParams",
     "ApproveRequest",
