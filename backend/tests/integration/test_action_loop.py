@@ -1,9 +1,9 @@
 """Sprint 6 integration tests: full action loop.
 
-Blueprint §14.5, §24.1 Exit Criteria:
-- propose → approve → execute → operational write
+Blueprint Â§14.5, Â§24.1 Exit Criteria:
+- propose -> approve -> execute -> operational write
 - inventory_movements.reference_id == action_id linkage
-- incident_actions.status flips proposed → executing → executed
+- incident_actions.status flips proposed -> executing -> executed
 - aggregator_node completes the loop (replaces assemble_response + persist_incident)
 
 LLM is not invoked: state is pre-built with canned synthesis/proposals.
@@ -22,10 +22,10 @@ from sqlalchemy import text
 from app.db.models import IncidentAction
 from app.db.models import Session as SessionModel
 from app.db.session import get_session
-from app.graph.nodes.aggregator import aggregator_node
-from app.graph.nodes.reflection import _execute_approved_actions, _persist_proposed_actions
+from app.graph.nodes.action_executor import _execute_approved_actions, _persist_action_requests
+from app.graph.nodes.response_composer import response_composer_node
 from app.schemas import (
-    ActionProposal,
+    ActionRequest,
     ActionResult,
     DomainFinding,
     HITLDecision,
@@ -42,7 +42,7 @@ from app.tools.inventory import get_stock_level
 pytestmark = pytest.mark.usefixtures("ensure_seed_data")
 
 
-# ── Canned state builder ─────────────────────────────────────────────────────
+# â”€â”€ Canned state builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _make_full_state(
@@ -52,8 +52,9 @@ def _make_full_state(
     approved: bool = True,
 ) -> dict:
     """Build a complete AgentState-like dict for action-loop tests."""
-    proposal = ActionProposal(
+    proposal = ActionRequest(
         action_id=action_id,
+        domain="inventory",
         target="SKU-101",
         parameters=RestockParams(sku="SKU-101", quantity=qty),
         risk_level="low",
@@ -68,11 +69,10 @@ def _make_full_state(
                 cause="SKU-101 out of stock",
                 domain="inventory",
                 evidence=["SKU-101 quantity_on_hand=0", "OOS since yesterday 10:00"],
-                confidence=0.95,
             )
         ],
         contributing_factors={"inventory": "stockout"},
-        confidence_score=0.95,
+        status="answered",
         recommendations=["Restock SKU-101 immediately"],
         domains_correlated=["inventory"],
     )
@@ -88,7 +88,6 @@ def _make_full_state(
             required_domains=["sales", "inventory"],
             memory_needed=True,
             action_only=False,
-            confidence=0.95,
             reasoning="Sales drop likely driven by inventory stockout.",
         ),
         "domain_findings": {
@@ -99,7 +98,7 @@ def _make_full_state(
                     MetricSnapshot(name="quantity_on_hand", value=0, unit="units", period="now")
                 ],
                 anomalies=["SKU-101 is out of stock."],
-                confidence=0.95,
+                status="ok",
                 tool_calls_made=["get_stock_level"],
                 severity="critical",
             )
@@ -113,10 +112,9 @@ def _make_full_state(
         "reflection_result": ReflectionResult(
             verdict="pass",
             critique="Root causes confirmed; action recommended.",
-            confidence=0.95,
         ),
         "retry_count": 1,
-        "proposed_actions": [proposal],
+        "action_requests": [proposal],
         "hitl_decision": HITLDecision(
             approved_action_ids=[action_id] if approved else [],
             rejected_action_ids=[] if approved else [action_id],
@@ -134,7 +132,7 @@ def _make_full_state(
 async def _insert_proposed_action(action_id: str, thread_id: str, qty: int = 10) -> None:
     """Insert an incident_actions row with status='proposed'.
 
-    NOTE: incident_actions.session_id is FK → sessions.thread_id.
+    NOTE: incident_actions.session_id is FK -> sessions.thread_id.
     We use thread_id as session_id so the FK constraint is satisfied.
     """
     async with get_session() as session:
@@ -150,7 +148,7 @@ async def _insert_proposed_action(action_id: str, thread_id: str, qty: int = 10)
         session.add(
             IncidentAction(
                 action_id=action_id,
-                session_id=thread_id,  # FK → sessions.thread_id
+                session_id=thread_id,  # FK -> sessions.thread_id
                 action_type="restock_product",
                 target="SKU-101",
                 parameters={
@@ -166,12 +164,12 @@ async def _insert_proposed_action(action_id: str, thread_id: str, qty: int = 10)
         await session.commit()
 
 
-# ── Tests ────────────────────────────────────────────────────────────────────
+# â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @pytest.mark.asyncio
 async def test_full_action_loop_writes_inventory_and_movement_row() -> None:
-    """§14.5, §24.1: execute approved restock → inventory bumped + movement logged.
+    """Â§14.5, Â§24.1: execute approved restock -> inventory bumped + movement logged.
 
     The key proof:
     1. inventory.quantity_on_hand increases by exactly qty.
@@ -187,18 +185,18 @@ async def test_full_action_loop_writes_inventory_and_movement_row() -> None:
 
     state = _make_full_state(thread_id, action_id, qty, approved=True)
     decision = state["hitl_decision"]
-    proposals = state["proposed_actions"]
+    proposals = state["action_requests"]
 
-    # ── Execute via the internal helper now in reflection_node ──
+    # â”€â”€ Execute via the internal helper now in action_executor â”€â”€
     action_results = await _execute_approved_actions(proposals, decision, state)
     assert action_results[0].status == "executed"
     assert action_results[0].result_payload["sku"] == "SKU-101"
 
-    # ── Verify: stock increased ──
+    # â”€â”€ Verify: stock increased â”€â”€
     after = await get_stock_level("SKU-101")
     assert after["quantity_on_hand"] == before["quantity_on_hand"] + qty
 
-    # ── Verify: reference_id linkage (§14.5 — the demo proof) ──
+    # â”€â”€ Verify: reference_id linkage (Â§14.5 â€” the demo proof) â”€â”€
     async with get_session() as session:
         movement = (
             await session.execute(
@@ -238,7 +236,7 @@ async def test_full_action_loop_writes_inventory_and_movement_row() -> None:
 
 @pytest.mark.asyncio
 async def test_rejected_action_is_skipped_and_stock_unchanged() -> None:
-    """§14.3: rejected actions produce 'skipped' result; Layer 1 is not written."""
+    """Â§14.3: rejected actions produce 'skipped' result; Layer 1 is not written."""
     action_id = str(uuid.uuid4())
     thread_id = f"reject-{uuid.uuid4()}"
     qty = 15
@@ -248,11 +246,11 @@ async def test_rejected_action_is_skipped_and_stock_unchanged() -> None:
 
     state = _make_full_state(thread_id, action_id, qty, approved=False)
     decision = state["hitl_decision"]
-    proposals = state["proposed_actions"]
+    proposals = state["action_requests"]
 
     action_results = await _execute_approved_actions(proposals, decision, state)
 
-    # Rejected → skipped
+    # Rejected -> skipped
     assert action_results[0].status == "skipped"
     assert action_results[0].result_payload["reason"] == "rejected_by_human"
 
@@ -262,11 +260,11 @@ async def test_rejected_action_is_skipped_and_stock_unchanged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persist_proposed_actions_writes_incident_actions_row() -> None:
-    """§9.3: _persist_proposed_actions writes incident_actions rows with status='proposed'."""
+async def test_persist_action_requests_writes_incident_actions_row() -> None:
+    """Â§9.3: _persist_action_requests writes incident_actions rows with status='proposed'."""
     thread_id = f"agent-{uuid.uuid4()}"
 
-    # Sessions row must exist first (session_id FK → sessions.thread_id)
+    # Sessions row must exist first (session_id FK -> sessions.thread_id)
     async with get_session() as session:
         session.add(
             SessionModel(
@@ -281,8 +279,9 @@ async def test_persist_proposed_actions_writes_incident_actions_row() -> None:
 
     action_id = str(uuid.uuid4())
     proposals = [
-        ActionProposal(
+        ActionRequest(
             action_id=action_id,
+            domain="inventory",
             target="inventory",
             parameters=RestockParams(sku="SKU-101", quantity=100),
             risk_level="low",
@@ -292,7 +291,7 @@ async def test_persist_proposed_actions_writes_incident_actions_row() -> None:
     ]
     state = {"thread_id": thread_id, "session_id": f"session-{thread_id}"}
 
-    await _persist_proposed_actions(proposals, state)
+    await _persist_action_requests(proposals, state)
 
     # Verify DB row was inserted
     async with get_session() as session:
@@ -308,7 +307,7 @@ async def test_persist_proposed_actions_writes_incident_actions_row() -> None:
 
 @pytest.mark.asyncio
 async def test_aggregator_builds_final_response_from_synthesis() -> None:
-    """§8, §13.4: aggregator is pure and builds FinalResponse correctly."""
+    """Â§8, Â§13.4: response_composer_node builds FinalResponse correctly."""
     action_id = str(uuid.uuid4())
     thread_id = f"assemble-{uuid.uuid4()}"
     qty = 10
@@ -323,23 +322,26 @@ async def test_aggregator_builds_final_response_from_synthesis() -> None:
         )
     ]
 
-    # Patch Qdrant so no real embedding needed (aggregator does best-effort persist)
+    # Patch Qdrant and LLM so no real external calls are made
     with (
         patch(
-            "app.graph.nodes.aggregator.embed_text",
+            "app.graph.nodes.response_composer.embed_text",
             new=AsyncMock(return_value=[0.0] * 1536),
         ),
         patch(
-            "app.graph.nodes.aggregator.qdrant_upsert",
+            "app.graph.nodes.response_composer.qdrant_upsert",
             new=AsyncMock(return_value=None),
         ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout resolved."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     fr = result["final_response"]
 
     assert fr.status == "success"
-    assert fr.confidence_score == pytest.approx(0.95, abs=0.01)
     assert fr.session_id == f"session-{thread_id}"
     assert len(fr.root_causes) == 1
     assert (
@@ -347,12 +349,11 @@ async def test_aggregator_builds_final_response_from_synthesis() -> None:
         or "out of stock" in fr.root_causes[0].cause.lower()
     )
     assert fr.executed_actions[0].status == "executed"
-    assert not fr.low_confidence_flag
 
 
 @pytest.mark.asyncio
 async def test_aggregator_persists_incident_to_postgres() -> None:
-    """§15.3: aggregator inserts an incidents row for diagnostic intents."""
+    """Â§15.3: response_composer_node inserts an incidents row for diagnostic intents."""
     session_id = f"persist-test-{uuid.uuid4()}"
 
     state = {
@@ -366,7 +367,6 @@ async def test_aggregator_persists_incident_to_postgres() -> None:
             required_domains=["inventory"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Test.",
         ),
         "synthesis": SynthesisResult(
@@ -376,15 +376,14 @@ async def test_aggregator_persists_incident_to_postgres() -> None:
                     cause="Stockout",
                     domain="inventory",
                     evidence=["qty=0"],
-                    confidence=0.9,
                 )
             ],
             contributing_factors={},
-            confidence_score=0.9,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),
-        "proposed_actions": [],
+        "action_requests": [],
         "action_results": [],
         "domain_findings": {},
         "memory_context": None,
@@ -398,18 +397,22 @@ async def test_aggregator_persists_incident_to_postgres() -> None:
         "created_at": datetime.now(UTC),
     }
 
-    # Patch Qdrant so no real embedding needed
+    # Patch Qdrant and LLM so no real external calls are made
     with (
         patch(
-            "app.graph.nodes.aggregator.embed_text",
+            "app.graph.nodes.response_composer.embed_text",
             new=AsyncMock(return_value=[0.0] * 1536),
         ),
         patch(
-            "app.graph.nodes.aggregator.qdrant_upsert",
+            "app.graph.nodes.response_composer.qdrant_upsert",
             new=AsyncMock(return_value=None),
         ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout caused the drop."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     assert result["final_response"] is not None  # always returns a final_response
 
@@ -443,20 +446,17 @@ async def test_aggregator_skips_persist_for_memory_recall_intent() -> None:
             required_domains=[],
             memory_needed=True,
             action_only=False,
-            confidence=0.9,
             reasoning="User asked about past incidents.",
         ),
         "synthesis": SynthesisResult(
             correlated_explanation="Past incidents found.",
-            root_causes=[
-                RootCause(cause="prior stockout", domain="inventory", evidence=[], confidence=0.8)
-            ],
+            root_causes=[RootCause(cause="prior stockout", domain="inventory", evidence=[])],
             contributing_factors={},
-            confidence_score=0.8,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),
-        "proposed_actions": [],
+        "action_requests": [],
         "action_results": [],
         "domain_findings": {},
         "memory_context": None,
@@ -470,7 +470,11 @@ async def test_aggregator_skips_persist_for_memory_recall_intent() -> None:
         "created_at": datetime.now(UTC),
     }
 
-    result = await aggregator_node(state)
+    with patch(
+        "app.graph.nodes.response_composer._compose_summary",
+        new=AsyncMock(return_value="Past incidents found."),
+    ):
+        result = await response_composer_node(state)
     assert result["final_response"] is not None
 
     # Should NOT have written to DB (memory_recall is not a diagnostic intent)

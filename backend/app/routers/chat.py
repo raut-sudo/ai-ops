@@ -1,6 +1,6 @@
 """POST /chat — NDJSON streaming endpoint.
 
-Stream contract (§19.3, §17.4, §30.11):
+Stream contract:
   - Emits one NDJSON object per line.
   - Intermediate events: node_start, domain_finding, synthesis.
   - Terminal events (exactly ONE per stream, never both):
@@ -8,8 +8,6 @@ Stream contract (§19.3, §17.4, §30.11):
       * final        — graph reached END
       * error        — unrecoverable exception
 
-Blueprint invariant §30.11: a stream ends with EITHER hitl_pending OR final,
-never both, never neither.
 """
 
 from __future__ import annotations
@@ -37,15 +35,16 @@ router = APIRouter(tags=["chat"])
 # Node names that trigger a node_start stream event.
 _GRAPH_NODES = frozenset(
     {
-        "intent_classifier",
+        "orchestrator",
         "sales_agent",
         "inventory_agent",
         "marketing_agent",
         "support_agent",
-        "memory_retrieve",
+        "memory_agent",
         "synthesizer",
         "reflection",
-        "aggregator",
+        "action_executor",
+        "response_composer",
     }
 )
 
@@ -79,7 +78,7 @@ async def _event_generator(
 
     Guarantees exactly one terminal event (hitl_pending | final | error).
     """
-    proposed_actions_snapshot: list = []
+    action_requests_snapshot: list = []
 
     try:
         async for event in graph.astream_events(initial_state, config, version="v2"):
@@ -111,6 +110,10 @@ async def _event_generator(
                             "finding": payload,
                         }
                     )
+                # Accumulate action_requests from domain agents
+                reqs = output.get("action_requests") or []
+                if reqs:
+                    action_requests_snapshot.extend(reqs)
 
             # ── synthesis ───────────────────────────────────────────────────
             elif kind == "on_chain_end" and name == "synthesizer":
@@ -121,13 +124,6 @@ async def _event_generator(
                         synthesis.model_dump() if hasattr(synthesis, "model_dump") else synthesis
                     )
                     yield _ndjson({"type": "synthesis", "synthesis": payload})
-
-            # ── capture proposed_actions for hitl_pending terminal event ────
-            elif kind == "on_chain_end" and name == "reflection":
-                output = event.get("data", {}).get("output") or {}
-                proposed_actions_snapshot = (
-                    output.get("proposed_actions") or proposed_actions_snapshot
-                )
 
     except Exception as exc:
         log.exception("chat.stream.error", thread_id=thread_id, error=str(exc))
@@ -143,16 +139,29 @@ async def _event_generator(
         return
 
     if _is_awaiting_hitl(snapshot):
-        # Terminal: graph is paused inside reflection (HITL via interrupt()) — emit hitl_pending (§17.4).
-        # Serialize action_type explicitly because it is a @property (§30.13).
+        # Terminal: graph is paused inside action_executor (HITL via interrupt()) — emit hitl_pending.
+        # Serialize action_type explicitly because it is a @property.
         actions_payload = []
-        for p in proposed_actions_snapshot:
-            if hasattr(p, "model_dump"):
-                d = p.model_dump()
-                d["action_type"] = p.action_type
+        for r in action_requests_snapshot:
+            if hasattr(r, "model_dump"):
+                d = r.model_dump()
+                d["action_type"] = r.action_type
                 actions_payload.append(d)
             else:
-                actions_payload.append(p)
+                actions_payload.append(r)
+
+        # When interrupt() fires the action_executor node never emits on_chain_end, so
+        # action_requests_snapshot may be empty.  Fall back to the interrupt payload
+        # that LangGraph checkpointed in snapshot.tasks[*].interrupts.
+        if not actions_payload:
+            for task in getattr(snapshot, "tasks", ()) or ():
+                for intr in getattr(task, "interrupts", ()) or ():
+                    intr_val = getattr(intr, "value", None)
+                    if isinstance(intr_val, dict) and "proposed_actions" in intr_val:
+                        actions_payload = intr_val["proposed_actions"]
+                        break
+                if actions_payload:
+                    break
 
         yield _ndjson(
             {
@@ -218,16 +227,16 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     # ── Build initial AgentState ─────────────────────────────────────────
     # messages only contains the new HumanMessage; the add_messages reducer
     # will merge this with the persisted history from the checkpoint.
+    # NOTE: Only include fields that should be set fresh per-turn.
+    # Do NOT include retry_count, action_requests, action_results, or
+    # domain_findings — these either use reducers or should
+    # persist across the graph run from their default/checkpoint values.
     initial_state: dict = {
         "session_id": thread_id,
         "thread_id": thread_id,
         "user_id": user_id,
         "query": body.query,
         "messages": [HumanMessage(content=body.query)],
-        "retry_count": 0,
-        "domain_findings": {},
-        "proposed_actions": [],
-        "action_results": [],
         "otel_trace_id": "",
     }
 

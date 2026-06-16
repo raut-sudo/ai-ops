@@ -8,11 +8,11 @@ from sqlalchemy import text
 from app.db.session import get_session
 from app.schemas import ActionProposal, AlertParams, CampaignParams, RestockParams, TicketParams
 from app.tools.actions import (
-    activate_campaign,
-    create_support_ticket,
-    pause_campaign,
-    restock_product,
-    send_alert,
+    create_purchase_order,
+    notify_stakeholders,
+    open_customer_issue,
+    resume_campaign,
+    suspend_campaign,
 )
 
 pytestmark = pytest.mark.usefixtures("ensure_seed_data")
@@ -33,6 +33,7 @@ async def test_restock_product_writes_inventory_and_movement() -> None:
 
     proposal = ActionProposal(
         action_id=action_id,
+        domain="test",
         target="SKU-101",
         parameters=RestockParams(sku="SKU-101", quantity=10),
         risk_level="low",
@@ -40,7 +41,7 @@ async def test_restock_product_writes_inventory_and_movement() -> None:
         estimated_impact="verify atomic write",
     )
 
-    result = await restock_product(proposal)
+    result = await create_purchase_order(proposal)
 
     async with get_session() as session:
         after_row = (
@@ -69,7 +70,7 @@ async def test_restock_product_writes_inventory_and_movement() -> None:
     assert after_qty == before_qty + 10
     assert int(move_row.movement_count) == 1
 
-    # ── Teardown: restore original quantity so subsequent tests see seed state ──
+    # -- Teardown: restore original quantity so subsequent tests see seed state --
     async with get_session() as session:
         await session.execute(
             text(
@@ -99,23 +100,25 @@ async def test_pause_and_activate_campaign() -> None:
 
     pause_proposal = ActionProposal(
         action_id=str(uuid.uuid4()),
+        domain="test",
         target=campaign_id,
-        parameters=CampaignParams(action_type="pause_campaign", campaign_id=campaign_id),
+        parameters=CampaignParams(action_type="suspend_campaign", campaign_id=campaign_id),
         risk_level="low",
         justification="unit test pause",
         estimated_impact="campaign state update",
     )
-    pause_result = await pause_campaign(pause_proposal)
+    pause_result = await suspend_campaign(pause_proposal)
 
     activate_proposal = ActionProposal(
         action_id=str(uuid.uuid4()),
+        domain="test",
         target=campaign_id,
-        parameters=CampaignParams(action_type="activate_campaign", campaign_id=campaign_id),
+        parameters=CampaignParams(action_type="resume_campaign", campaign_id=campaign_id),
         risk_level="low",
         justification="unit test activate",
         estimated_impact="campaign state update",
     )
-    activate_result = await activate_campaign(activate_proposal)
+    activate_result = await resume_campaign(activate_proposal)
 
     async with get_session() as session:
         status = (
@@ -133,7 +136,7 @@ async def test_pause_and_activate_campaign() -> None:
     assert activate_result.status == "executed"
     assert status == "active"
 
-    # ── Teardown: restore original campaign state so seed scenario tests pass ──
+    # -- Teardown: restore original campaign state so seed scenario tests pass --
     async with get_session() as session:
         await session.execute(
             text("UPDATE campaigns SET status = :status, paused_at = :paused_at WHERE id = :id"),
@@ -149,23 +152,25 @@ async def test_create_support_ticket_and_send_alert() -> None:
 
     ticket_proposal = ActionProposal(
         action_id=ticket_action_id,
+        domain="test",
         target="support",
         parameters=TicketParams(subject="Phase 3 tool test ticket", priority="medium"),
         risk_level="low",
         justification="unit test support ticket",
         estimated_impact="verify support write",
     )
-    ticket_result = await create_support_ticket(ticket_proposal)
+    ticket_result = await open_customer_issue(ticket_proposal)
 
     alert_proposal = ActionProposal(
         action_id=alert_action_id,
+        domain="test",
         target="ops-team",
         parameters=AlertParams(channel="slack", message="Phase 3 test alert"),
         risk_level="low",
         justification="unit test alert",
         estimated_impact="verify audit write",
     )
-    alert_result = await send_alert(alert_proposal)
+    alert_result = await notify_stakeholders(alert_proposal)
 
     async with get_session() as session:
         ticket_row = (

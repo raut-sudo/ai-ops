@@ -1,10 +1,31 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from app.graph.nodes.reflection import reflection_node
 from app.graph.state import AgentState
-from app.schemas import DomainFinding, IntentClassification, RootCause, SynthesisResult
+from app.schemas import (
+    DomainFinding,
+    IntentClassification,
+    ReflectionResult,
+    RootCause,
+    SynthesisResult,
+)
+
+
+def _mock_agent(verdict: str, domains: list[str] | None = None):
+    """Return a mock agent whose ainvoke resolves to the given verdict."""
+    mock = AsyncMock()
+    mock.ainvoke.return_value = {
+        "structured_response": ReflectionResult(
+            verdict=verdict,
+            critique="mocked",
+            domains_to_retry=domains or [],
+        )
+    }
+    return mock
 
 
 @pytest.mark.asyncio
@@ -16,14 +37,13 @@ async def test_lookup_result_passes_without_retry() -> None:
             required_domains=["sales"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="lookup query",
         ),
         "synthesis": SynthesisResult(
             correlated_explanation="The highest selling product is Aurora Wireless Earbuds with 1,605 units sold.",
             root_causes=[],
             contributing_factors={"sales": "lookup result"},
-            confidence_score=0.9,
+            status="answered",
             recommendations=[],
             domains_correlated=["sales"],
         ),
@@ -32,7 +52,8 @@ async def test_lookup_result_passes_without_retry() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch("app.graph.nodes.reflection.create_agent", return_value=_mock_agent("pass")):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "pass"
 
@@ -46,14 +67,13 @@ async def test_non_diagnostic_intent_passes_directly() -> None:
             required_domains=[],
             memory_needed=False,
             action_only=False,
-            confidence=0.95,
             reasoning="reporting query",
         ),
         "synthesis": SynthesisResult(
             correlated_explanation="Some answer.",
             root_causes=[],
             contributing_factors={},
-            confidence_score=0.0,
+            status="answered",
             recommendations=[],
             domains_correlated=[],
         ),
@@ -62,7 +82,8 @@ async def test_non_diagnostic_intent_passes_directly() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch("app.graph.nodes.reflection.create_agent", return_value=_mock_agent("pass")):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "pass"
 
@@ -76,14 +97,13 @@ async def test_low_confidence_without_root_causes_still_retries() -> None:
             required_domains=["sales"],
             memory_needed=False,
             action_only=False,
-            confidence=0.8,
             reasoning="diagnosis",
         ),
         "synthesis": SynthesisResult(
             correlated_explanation="some signal",
             root_causes=[],
             contributing_factors={},
-            confidence_score=0.5,
+            status="insufficient",
             recommendations=[],
             domains_correlated=["sales"],
         ),
@@ -93,7 +113,7 @@ async def test_low_confidence_without_root_causes_still_retries() -> None:
                 findings=["some signal"],
                 metrics=[],
                 anomalies=[],
-                confidence=0.5,
+                status="partial",
                 tool_calls_made=[],
                 severity="low",
             ),
@@ -102,7 +122,11 @@ async def test_low_confidence_without_root_causes_still_retries() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch(
+        "app.graph.nodes.reflection.create_agent",
+        return_value=_mock_agent("retry_with_domains", ["sales"]),
+    ):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "retry_with_domains"
 
@@ -116,16 +140,13 @@ async def test_diagnostic_with_root_causes_passes() -> None:
             required_domains=["sales", "inventory"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="diagnosis",
         ),
         "synthesis": SynthesisResult(
             correlated_explanation="Multi-factor impact detected.",
-            root_causes=[
-                RootCause(cause="Stockout", domain="inventory", evidence=[], confidence=0.8)
-            ],
+            root_causes=[RootCause(cause="Stockout", domain="inventory", evidence=[])],
             contributing_factors={"inventory": "stockout"},
-            confidence_score=0.8,
+            status="answered",
             recommendations=["Restock SKU"],
             domains_correlated=["inventory", "sales"],
         ),
@@ -134,6 +155,7 @@ async def test_diagnostic_with_root_causes_passes() -> None:
         "messages": [],
     }
 
-    result = await reflection_node(state)
+    with patch("app.graph.nodes.reflection.create_agent", return_value=_mock_agent("pass")):
+        result = await reflection_node(state)
     ref = result["reflection_result"]
     assert ref.verdict == "pass"

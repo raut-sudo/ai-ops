@@ -1,3 +1,3 @@
-from app.observability.tracer import get_tracer, init_otel, setup_tracing, shutdown_tracing
+from app.observability.tracer import configure_langsmith_tracing
 
-__all__ = ["get_tracer", "init_otel", "setup_tracing", "shutdown_tracing"]
+__all__ = ["configure_langsmith_tracing"]

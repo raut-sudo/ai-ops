@@ -7,15 +7,16 @@ def test_graph_nodes_match_blueprint_topology() -> None:
     graph = build_graph()
 
     expected_nodes = {
-        "intent_classifier",
+        "orchestrator",
         "sales_agent",
         "inventory_agent",
         "marketing_agent",
         "support_agent",
-        "memory_retrieve",
+        "memory_agent",
         "synthesizer",
         "reflection",
-        "aggregator",
+        "action_executor",
+        "response_composer",
     }
 
     assert set(graph.nodes.keys()) == expected_nodes
@@ -25,14 +26,15 @@ def test_graph_unconditional_edges_match_blueprint() -> None:
     graph = build_graph()
 
     expected_edges = {
-        ("__start__", "intent_classifier"),
+        ("__start__", "orchestrator"),
         ("sales_agent", "synthesizer"),
         ("inventory_agent", "synthesizer"),
         ("marketing_agent", "synthesizer"),
         ("support_agent", "synthesizer"),
-        ("memory_retrieve", "synthesizer"),
+        ("memory_agent", "synthesizer"),
         ("synthesizer", "reflection"),
-        ("aggregator", "__end__"),
+        ("action_executor", "response_composer"),
+        ("response_composer", "__end__"),
     }
 
     assert graph.edges == expected_edges
@@ -42,7 +44,7 @@ def test_graph_conditional_branches_match_blueprint() -> None:
     graph = build_graph()
 
     expected_branch_nodes = {
-        "intent_classifier": "route_after_intent",
+        "orchestrator": "route_after_intent",
         "reflection": "route_after_reflection",
     }
 

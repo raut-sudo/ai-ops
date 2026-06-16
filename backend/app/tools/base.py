@@ -27,9 +27,14 @@ _PERIOD_ALIASES: dict[str, str] = {
     "7d": "last_7_days",
     "last_week": "last_7_days",
     "weekly": "last_7_days",
+    "14d": "last_30_days",  # "two weeks" → nearest supported window
+    "2w": "last_30_days",
+    "two_weeks": "last_30_days",
     "30d": "last_30_days",
     "last_month": "last_30_days",
     "monthly": "last_30_days",
+    "90d": "last_30_days",  # longest window maps to last_30_days for now
+    "quarter": "last_30_days",
 }
 
 

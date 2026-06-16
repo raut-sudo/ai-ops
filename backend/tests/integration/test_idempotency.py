@@ -19,10 +19,10 @@ from sqlalchemy import text
 from app.db.models import IncidentAction
 from app.db.models import Session as SessionModel
 from app.db.session import get_session
-from app.graph.nodes.aggregator import aggregator_node
-from app.graph.nodes.reflection import _execute_approved_actions
+from app.graph.nodes.action_executor import _execute_approved_actions
+from app.graph.nodes.response_composer import response_composer_node
 from app.schemas import (
-    ActionProposal,
+    ActionRequest,
     HITLDecision,
     IntentClassification,
     RestockParams,
@@ -41,13 +41,14 @@ async def _seed_proposed_action(
     action_id: str,
     thread_id: str,
     qty: int,
-) -> ActionProposal:
+) -> ActionRequest:
     """Insert an incident_actions row (status='proposed') and return the proposal.
 
     NOTE: incident_actions.session_id is FK → sessions.thread_id.
     """
-    proposal = ActionProposal(
+    proposal = ActionRequest(
         action_id=action_id,
+        domain="inventory",
         target="SKU-101",
         parameters=RestockParams(sku="SKU-101", quantity=qty),
         risk_level="low",
@@ -80,10 +81,10 @@ async def _seed_proposed_action(
     return proposal
 
 
-def _exec_state(proposal: ActionProposal) -> dict:
+def _exec_state(proposal: ActionRequest) -> dict:
     return {
         "user_id": "test-user",
-        "proposed_actions": [proposal],
+        "action_requests": [proposal],
         "hitl_decision": HITLDecision(
             approved_action_ids=[proposal.action_id],
             rejected_action_ids=[],
@@ -137,12 +138,12 @@ async def test_concurrent_approve_executes_action_exactly_once() -> None:
     before = await get_stock_level("SKU-101")
     state = _exec_state(proposal)
     decision = state["hitl_decision"]
-    proposals = state["proposed_actions"]
+    requests = state["action_requests"]
 
     # Fire two concurrent executions
     r1, r2 = await asyncio.gather(
-        _execute_approved_actions(proposals, decision, state),
-        _execute_approved_actions(proposals, decision, state),
+        _execute_approved_actions(requests, decision, state),
+        _execute_approved_actions(requests, decision, state),
         return_exceptions=True,
     )
 
@@ -195,16 +196,16 @@ async def test_reapprove_after_completion_is_idempotent() -> None:
     before = await get_stock_level("SKU-101")
     state = _exec_state(proposal)
     decision = state["hitl_decision"]
-    proposals = state["proposed_actions"]
+    requests = state["action_requests"]
 
     # ── First execution ──
-    first = await _execute_approved_actions(proposals, decision, state)
+    first = await _execute_approved_actions(requests, decision, state)
     assert first[0].status == "executed"
     mid = await get_stock_level("SKU-101")
     assert mid["quantity_on_hand"] == before["quantity_on_hand"] + qty
 
     # ── Second execution (re-approve after completion) ──
-    second = await _execute_approved_actions(proposals, decision, state)
+    second = await _execute_approved_actions(requests, decision, state)
     assert second[0].status == "skipped"
     assert second[0].result_payload["reason"] == "already_processed"
 
@@ -255,7 +256,6 @@ async def test_aggregator_qdrant_outage_does_not_fail_response() -> None:
             required_domains=["inventory"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Test.",
         ),
         "synthesis": SynthesisResult(
@@ -265,15 +265,14 @@ async def test_aggregator_qdrant_outage_does_not_fail_response() -> None:
                     cause="Stockout",
                     domain="inventory",
                     evidence=["qty=0"],
-                    confidence=0.9,
                 )
             ],
             contributing_factors={},
-            confidence_score=0.9,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),
-        "proposed_actions": [],
+        "action_requests": [],
         "action_results": [],
         "domain_findings": {},
         "memory_context": None,
@@ -290,15 +289,19 @@ async def test_aggregator_qdrant_outage_does_not_fail_response() -> None:
     # Qdrant raises — embed_text returns a valid vector but qdrant_upsert fails
     with (
         patch(
-            "app.graph.nodes.aggregator.embed_text",
+            "app.graph.nodes.response_composer.embed_text",
             new=AsyncMock(return_value=[0.0] * 1536),
         ),
         patch(
-            "app.graph.nodes.aggregator.qdrant_upsert",
+            "app.graph.nodes.response_composer.qdrant_upsert",
             new=AsyncMock(side_effect=Exception("Qdrant connection refused")),
         ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout caused decline."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     # Must return final_response without raising
     assert result["final_response"] is not None
@@ -335,7 +338,6 @@ async def test_aggregator_complete_outage_does_not_fail_response() -> None:
             required_domains=["inventory"],
             memory_needed=False,
             action_only=False,
-            confidence=0.9,
             reasoning="Test.",
         ),
         "synthesis": SynthesisResult(
@@ -345,15 +347,14 @@ async def test_aggregator_complete_outage_does_not_fail_response() -> None:
                     cause="Stockout",
                     domain="inventory",
                     evidence=["qty=0"],
-                    confidence=0.9,
                 )
             ],
             contributing_factors={},
-            confidence_score=0.9,
+            status="answered",
             recommendations=[],
             domains_correlated=["inventory"],
         ),
-        "proposed_actions": [],
+        "action_requests": [],
         "action_results": [],
         "domain_findings": {},
         "memory_context": None,
@@ -368,11 +369,17 @@ async def test_aggregator_complete_outage_does_not_fail_response() -> None:
     }
 
     # Patch get_session at the module level to simulate DB outage
-    with patch(
-        "app.graph.nodes.aggregator.get_session",
-        side_effect=Exception("DB connection refused"),
+    with (
+        patch(
+            "app.graph.nodes.response_composer.get_session",
+            side_effect=Exception("DB connection refused"),
+        ),
+        patch(
+            "app.graph.nodes.response_composer._compose_summary",
+            new=AsyncMock(return_value="SKU-101 stockout."),
+        ),
     ):
-        result = await aggregator_node(state)
+        result = await response_composer_node(state)
 
     # Must return final_response without raising — user response is unaffected
     assert result["final_response"] is not None

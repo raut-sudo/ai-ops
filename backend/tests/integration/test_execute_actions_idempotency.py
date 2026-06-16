@@ -7,8 +7,8 @@ from sqlalchemy import text
 
 from app.db.models import IncidentAction, Session
 from app.db.session import get_session
-from app.graph.nodes.reflection import _execute_approved_actions
-from app.schemas import ActionProposal, HITLDecision, RestockParams
+from app.graph.nodes.action_executor import _execute_approved_actions
+from app.schemas import ActionRequest, HITLDecision, RestockParams
 from app.tools.inventory import get_stock_level
 
 pytestmark = pytest.mark.usefixtures("ensure_seed_data")
@@ -19,8 +19,9 @@ async def test_execute_actions_is_idempotent_for_same_action() -> None:
     action_id = str(uuid.uuid4())
     thread_id = f"phase3-thread-{uuid.uuid4()}"
 
-    proposal = ActionProposal(
+    proposal = ActionRequest(
         action_id=action_id,
+        domain="inventory",
         target="SKU-101",
         parameters=RestockParams(sku="SKU-101", quantity=5),
         risk_level="low",
@@ -61,7 +62,7 @@ async def test_execute_actions_is_idempotent_for_same_action() -> None:
     )
     state = {
         "user_id": "phase3-test",
-        "proposed_actions": [proposal],
+        "action_requests": [proposal],
         "hitl_decision": decision,
     }
     proposals = [proposal]

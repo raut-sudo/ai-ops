@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.config import settings
-from app.graph.nodes.memory_retrieve import memory_retrieve_node
+from app.graph.nodes.memory_agent import memory_agent_node as memory_retrieve_node
 
 pytestmark = pytest.mark.usefixtures("ensure_seed_data")
 

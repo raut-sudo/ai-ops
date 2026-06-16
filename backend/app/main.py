@@ -3,18 +3,14 @@
 The public surface is a single `app` object (created by `create_app()`).
 
 Startup order:
-  1. configure_logging — structlog + stdlib bridge
-  2. setup_tracing     — OTel TracerProvider + FastAPI instrumentation
-  3. mount middleware  — CorrelationIDMiddleware
-  4. register handlers — AppException + catch-all 500
-
-Shutdown order:
-  1. shutdown_tracing  — flush BatchSpanProcessor
+  1. configure_logging        — structlog + stdlib bridge
+  2. configure_langsmith_tracing — LangSmith env vars
+  3. mount middleware         — CorrelationIDMiddleware
+  4. register handlers        — AppException + catch-all 500
 """
 
 from __future__ import annotations
 
-import os
 import warnings
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -28,7 +24,7 @@ from app.core.exceptions import AppException, app_exception_handler, unhandled_e
 from app.core.logging import configure_logging
 from app.core.middleware import AuthMiddleware, CorrelationIDMiddleware
 from app.graph.runtime import compile_graph_singleton, setup_checkpointer, shutdown_checkpointer
-from app.observability.tracer import setup_tracing, shutdown_tracing
+from app.observability.tracer import configure_langsmith_tracing
 from app.routers.health import router as health_router
 
 # Suppress Pydantic v2 serialization warning from OpenAI's
@@ -50,18 +46,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup → yield → shutdown."""
     # ── Startup ──────────────────────────────────────────────────────────────
     configure_logging(log_level=settings.LOG_LEVEL, app_env=settings.APP_ENV)
-
-    # Honour LANGCHAIN_TRACING_V2=false — disable LangSmith if no key or disabled.
-    langsmith_enabled = settings.LANGCHAIN_TRACING_V2.lower() == "true" and bool(
-        settings.LANGSMITH_API_KEY
-    )
-    os.environ["LANGCHAIN_TRACING_V2"] = "true" if langsmith_enabled else "false"
-    if not langsmith_enabled:
-        os.environ.pop("LANGCHAIN_API_KEY", None)
-        os.environ.pop("LANGSMITH_API_KEY", None)
+    configure_langsmith_tracing()
     await setup_checkpointer()
     await compile_graph_singleton()
-    setup_tracing(app)
     log.info(
         "app.startup",
         service="ai-ops-backend",
@@ -71,7 +58,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # ── Shutdown ─────────────────────────────────────────────────────────────
     await shutdown_checkpointer()
-    shutdown_tracing()
     log.info("app.shutdown")
 
 
@@ -89,8 +75,7 @@ def create_app() -> FastAPI:
 
     # ── Middleware ────────────────────────────────────────────────────────────
     # Starlette adds middleware in reverse order → first-added = outermost.
-    # Desired order (outer → inner): Auth → CorrelationID → OTel → handler.
-    # OTel is added by setup_tracing() (innermost); we add the others explicitly.
+    # Desired order (outer → inner): Auth → CorrelationID → handler.
     application.add_middleware(CorrelationIDMiddleware)
     application.add_middleware(AuthMiddleware)
 

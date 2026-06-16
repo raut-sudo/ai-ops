@@ -7,10 +7,10 @@ from sqlalchemy import text
 
 from app.db.session import get_session
 from app.schemas import ActionProposal, RestockParams
-from app.tools.actions import restock_product
+from app.tools.actions import create_purchase_order
 from app.tools.inventory import get_stock_level
-from app.tools.sales import get_sales_metrics
-from app.tools.support import get_support_metrics
+from app.tools.sales import analyze_sales
+from app.tools.support import analyze_support
 
 pytestmark = pytest.mark.usefixtures("ensure_seed_data")
 
@@ -30,7 +30,7 @@ async def test_tool_read_write_roundtrip_inventory() -> None:
         estimated_impact="prove write path",
     )
 
-    result = await restock_product(proposal)
+    result = await create_purchase_order(proposal)
     after = await get_stock_level("SKU-101")
 
     async with get_session() as session:
@@ -71,11 +71,8 @@ async def test_tool_read_write_roundtrip_inventory() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_reads_return_live_db_data() -> None:
-    sales = await get_sales_metrics("yesterday")
-    support = await get_support_metrics("yesterday")
+    sales = await analyze_sales("yesterday")
+    support = await analyze_support("yesterday")
 
-    sales_names = {m.name for m in sales}
-    support_names = {m.name for m in support}
-
-    assert {"revenue", "order_count", "average_order_value", "units_sold"}.issubset(sales_names)
-    assert {"ticket_count", "average_sentiment", "negative_ticket_count"}.issubset(support_names)
+    assert all(k in sales for k in ("revenue", "order_count", "average_order_value", "units_sold"))
+    assert all(k in support for k in ("ticket_count", "average_sentiment", "negative_ticket_count"))

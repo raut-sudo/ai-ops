@@ -9,8 +9,8 @@ class _Snapshot:
 
 
 def test_is_awaiting_hitl_true_when_reflection_in_next() -> None:
-    """Graph paused inside reflection (HITL via interrupt())."""
-    snapshot = _Snapshot(("reflection",))
+    """Graph paused inside action_executor (HITL via interrupt())."""
+    snapshot = _Snapshot(("action_executor",))
     assert _is_awaiting_hitl(snapshot) is True
 
 

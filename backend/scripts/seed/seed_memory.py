@@ -107,7 +107,9 @@ async def seed_qdrant_embeddings(
     from app.config import settings
     from app.embeddings import embed_text
 
-    client = AsyncQdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
+    client = AsyncQdrantClient(
+        host=settings.QDRANT_HOST, port=settings.QDRANT_PORT, check_compatibility=False
+    )
 
     # Ensure collection exists (idempotent)
     existing = [c.name for c in (await client.get_collections()).collections]

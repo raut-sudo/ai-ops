@@ -94,6 +94,7 @@ async def test_writes():
     print("2. Executing restock_product(SKU-102, qty=100)...", end=" ")
     proposal = ActionProposal(
         action_id="test-restock-001",
+        domain="inventory",
         target="inventory",
         parameters=RestockParams(sku="SKU-102", quantity=100),
         risk_level="low",

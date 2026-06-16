@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import operator
 from datetime import datetime
 from typing import Annotated
 
@@ -8,7 +9,7 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from app.schemas import (
-    ActionProposal,
+    ActionRequest,
     ActionResult,
     DomainFinding,
     FinalResponse,
@@ -54,7 +55,8 @@ class AgentState(TypedDict):
     retry_count: int
 
     # Actions
-    proposed_actions: list[ActionProposal]
+    # action_requests: accumulated from domain agents (list-concat reducer supports parallel writes)
+    action_requests: Annotated[list[ActionRequest], operator.add]
     hitl_decision: HITLDecision | None
     action_results: list[ActionResult]
 

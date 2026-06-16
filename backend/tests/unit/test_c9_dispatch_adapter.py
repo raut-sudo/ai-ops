@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.graph.nodes.reflection import ACTION_TYPE_TO_DISPATCH_KEY
+from app.graph.nodes.action_executor import ACTION_TYPE_TO_DISPATCH_KEY
 
 
 def test_adapter_contains_all_action_types() -> None:
