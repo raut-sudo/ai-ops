@@ -90,7 +90,7 @@ async def reflection_node(state: AgentState) -> dict:
                     {"messages": [{"role": "user", "content": _build_context(state)}]},
                     config={"recursion_limit": 5},
                 ),
-                timeout=30.0,
+                timeout=60.0,
             )
 
             result: ReflectionResult = agent_result["structured_response"]

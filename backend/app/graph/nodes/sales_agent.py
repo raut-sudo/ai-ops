@@ -82,9 +82,9 @@ async def sales_agent_node(state: dict) -> dict:
                         {"role": "user", "content": query},
                     ]
                 },
-                config={"recursion_limit": 25},
+                config={"recursion_limit": 30},
             ),
-            timeout=90.0,
+            timeout=150.0,
         )
 
         finding: DomainFinding = result["structured_response"]

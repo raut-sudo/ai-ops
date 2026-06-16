@@ -1,6 +1,6 @@
 """POST /chat — NDJSON streaming endpoint.
 
-Stream contract (§19.3, §17.4, §30.11):
+Stream contract:
   - Emits one NDJSON object per line.
   - Intermediate events: node_start, domain_finding, synthesis.
   - Terminal events (exactly ONE per stream, never both):
@@ -8,8 +8,6 @@ Stream contract (§19.3, §17.4, §30.11):
       * final        — graph reached END
       * error        — unrecoverable exception
 
-Blueprint invariant §30.11: a stream ends with EITHER hitl_pending OR final,
-never both, never neither.
 """
 
 from __future__ import annotations
